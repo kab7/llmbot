@@ -4,9 +4,11 @@
 llmbot/
 │
 ├── bot.py                 # Основной файл бота
+├── llm_runtime.py         # Runtime-настройки LLM (url/token/model)
 ├── config.py              # Конфигурация и настройки (включая модели)
-├── check_config.py        # Проверка конфигурации
 ├── requirements.txt       # Python зависимости
+├── requirements-dev.txt   # Зависимости для тестов
+├── pyproject.toml         # Конфигурация pytest/coverage
 │
 ├── .env                   # Переменные окружения (создается вручную)
 ├── env.example            # Пример файла .env
@@ -15,17 +17,20 @@ llmbot/
 ├── setup.sh               # Скрипт автоматической установки
 ├── start.sh               # Скрипт запуска бота
 │
-├── README.md              # Главная документация
-├── QUICKSTART.md          # Быстрый старт
-├── INSTALL.md             # Подробная установка
-├── EXAMPLES.md            # Примеры использования
-├── FAQ.md                 # Часто задаваемые вопросы
-├── CHANGELOG.md           # История изменений
-├── PROJECT_STRUCTURE.md   # Этот файл
+├── README.md              # Главная документация (входная точка)
+├── CLAUDE.md              # Технические заметки для агента
+├── docs/
+│   ├── QUICKSTART.md
+│   ├── INSTALL.md
+│   ├── EXAMPLES.md
+│   ├── FAQ.md
+│   ├── CHANGELOG.md
+│   └── PROJECT_STRUCTURE.md
 │
 ├── telethon_session.session   # Сессия Telethon (создается автоматически)
 ├── telethon_session.session-journal  # Журнал сессии
 │
+├── tests/                 # Автотесты
 └── venv/                  # Виртуальное окружение Python (создается автоматически)
 ```
 
@@ -37,14 +42,14 @@ llmbot/
 Главный файл приложения. Содержит:
 - Логику работы с Telegram Bot API
 - Интеграцию с Telethon для доступа к истории
-- Функции для работы с LLM API (Eliza)
+- Функции для работы с OpenRouter-compatible LLM API
 - Обработчики команд пользователя
 - Парсинг и обработку запросов
 - Управление контекстом запросов
 - Нечеткий поиск чатов
 
 **Основные компоненты:**
-- `call_llm_api()` - универсальный интерфейс к LLM через Eliza API
+- `call_llm_api()` - универсальный интерфейс к LLM через OpenRouter API
 - `find_chat_by_name()` - нечеткий поиск чатов
 - `get_chat_history()` - загрузка истории сообщений с поддержкой гибких периодов
 - `parse_command_with_gpt()` - парсинг команд пользователя
@@ -64,33 +69,28 @@ llmbot/
 - Загрузка переменных окружения из `.env`
 - Настройки Telegram Bot API
 - Настройки Telethon
-- Настройки Eliza API
+- Настройки OpenRouter API
 - Настройки моделей по умолчанию
 - Имя файла сессии Telethon
 
 **Основные константы:**
 - `DEFAULT_MESSAGES_LIMIT = 300` - количество сообщений по умолчанию
-- `PARSER_MODEL_NAME` и `PARSER_MODEL_URL` - модель для парсинга команд (DeepSeek)
-- `PROCESSOR_MODEL_NAME` и `PROCESSOR_MODEL_URL` - модель для обработки (Alice AI)
+- `DEFAULT_LLM_URL` - URL OpenAI-compatible endpoint
+- `DEFAULT_LLM_MODEL` - модель по умолчанию
+- `DEFAULT_LLM_TOKEN` - ключ по умолчанию из `PRIMARY_LLM_API_KEY`
 - `PARSER_PROMPT` - system prompt для парсинга команд пользователя
 - `PROCESSOR_PROMPT` - system prompt для обработки и анализа переписок
 
 **Изменение моделей:**
-Отредактируйте константы в `config.py`. Для каждой модели нужно указать:
-1. `_MODEL_NAME` - название модели для payload API
-2. `_MODEL_URL` - полный URL endpoint для запроса
+Отредактируйте константы в `config.py` или меняйте значения на лету через команды:
+1. `/seturl` - URL endpoint
+2. `/setmodel` - модель
+3. `/settoken` - API ключ
 
 **Изменение промптов:**
 Промпты для LLM вынесены в `config.py` и легко настраиваются:
 - `PARSER_PROMPT` - инструкции для парсинга команд в JSON
 - `PROCESSOR_PROMPT` - инструкции для анализа истории чатов
-
-#### `check_config.py`
-Утилита для проверки конфигурации:
-- Проверяет наличие файла `.env`
-- Проверяет все обязательные переменные
-- Выводит подробный отчет о статусе каждой переменной
-- Показывает примеры исправления ошибок
 
 ### Скрипты
 
@@ -105,7 +105,6 @@ llmbot/
 Запуск бота:
 - Проверка версии Python (3.11-3.13)
 - Активация виртуального окружения
-- Проверка конфигурации (`check_config.py`)
 - Запуск `bot.py`
 
 ### Конфигурационные файлы
@@ -116,7 +115,7 @@ llmbot/
 - `TELEGRAM_API_ID` - API ID от my.telegram.org
 - `TELEGRAM_API_HASH` - API Hash от my.telegram.org
 - `TELEGRAM_PHONE` - номер телефона для Telethon
-- `ELIZA_TOKEN` - OAuth токен для Eliza API
+- `PRIMARY_LLM_API_KEY` - API ключ для OpenRouter-compatible API (опционально)
 - `ADMIN_USER_ID` - Telegram ID администратора
 
 **Безопасность:**
@@ -132,11 +131,16 @@ llmbot/
 
 #### `requirements.txt`
 Python зависимости:
-- `python-telegram-bot==20.8` - Telegram Bot API
+- `python-telegram-bot>=21.0` - Telegram Bot API
 - `telethon` - доступ к истории Telegram
 - `requests` - HTTP-запросы к LLM API
 - `python-dotenv` - загрузка переменных из `.env`
-- `urllib3` - утилиты для HTTP (отключение SSL warnings)
+
+#### `requirements-dev.txt`
+Зависимости для тестов и отчета покрытия:
+- `pytest`
+- `coverage`
+- `pytest-cov`
 
 ### Документация
 
@@ -150,14 +154,14 @@ Python зависимости:
 - Безопасность
 - Troubleshooting
 
-#### `QUICKSTART.md`
+#### `docs/QUICKSTART.md`
 Быстрый старт за 5 минут:
 - Пошаговая инструкция
 - Минимальная настройка
 - Первый запуск
 - Базовые команды
 
-#### `INSTALL.md`
+#### `docs/INSTALL.md`
 Подробная установка:
 - Установка Python на разных ОС
 - Создание виртуального окружения
@@ -166,7 +170,7 @@ Python зависимости:
 - Настройка переменных окружения
 - Troubleshooting установки
 
-#### `EXAMPLES.md`
+#### `docs/EXAMPLES.md`
 Примеры использования:
 - Базовые команды
 - Работа с контекстом
@@ -176,7 +180,7 @@ Python зависимости:
 - Продвинутые сценарии
 - Комбинирование функций
 
-#### `FAQ.md`
+#### `docs/FAQ.md`
 Часто задаваемые вопросы:
 - Установка и настройка
 - Использование
@@ -185,7 +189,7 @@ Python зависимости:
 - Производительность
 - Troubleshooting
 
-#### `CHANGELOG.md`
+#### `docs/CHANGELOG.md`
 История изменений:
 - Список всех изменений по версиям
 - Новые функции
@@ -222,7 +226,7 @@ process_user_message()
     ↓
 parse_command_with_gpt()
     ↓
-call_llm_api() → [Yandex Cloud / Eliza API]
+call_llm_api() → [OpenRouter-compatible API]
     ↓
 [JSON команда: chat, period, query]
     ↓
@@ -236,7 +240,7 @@ get_chat_history() → [Telethon]
     ↓
 process_chat_with_openai()
     ↓
-call_llm_api() → [Yandex Cloud / Eliza API]
+call_llm_api() → [OpenRouter-compatible API]
     ↓
 [Анализ/суммаризация]
     ↓
@@ -250,7 +254,7 @@ call_llm_api() → [Yandex Cloud / Eliza API]
 ```python
 current_context = {
     "chat_name": "название чата",
-    "period_type": "days" | "hours" | "today" | "unread" | "last_messages" | None,
+    "period_type": "days" | "hours" | "today" | "last_messages" | None,
     "period_value": число | None
 }
 ```

@@ -105,13 +105,9 @@ echo "✅ Установка завершена успешно!"
 echo "========================================"
 echo ""
 
-# Проверка конфигурации
-echo "🔍 Проверка конфигурации..."
-echo ""
-
 if [ -f ".env" ]; then
     echo "✅ Файл .env существует"
-    python check_config.py
+    echo "ℹ️  Проверка конфигурации выполнится автоматически при запуске бота."
 else
     echo "⚠️  Файл .env не найден"
     echo ""
@@ -134,9 +130,9 @@ fi
 
 echo ""
 echo "📖 Документация:"
-echo "   README.md       - полная инструкция"
-echo "   INSTALL.md      - установка Python и зависимостей"
-echo "   QUICKSTART.md   - быстрый старт"
+echo "   README.md             - полная инструкция"
+echo "   docs/INSTALL.md       - установка Python и зависимостей"
+echo "   docs/QUICKSTART.md    - быстрый старт"
+echo "   docs/FAQ.md           - частые вопросы"
 echo ""
 echo "🎉 Готово к работе!"
-

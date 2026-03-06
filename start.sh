@@ -21,17 +21,6 @@ if [ ! -d "venv" ]; then
     fi
 fi
 
-# Проверяем конфигурацию
-echo "🔍 Проверка конфигурации..."
-python check_config.py
-
-if [ $? -eq 0 ]; then
-    echo ""
-    echo "🚀 Запуск бота..."
-    python bot.py
-else
-    echo ""
-    echo "❌ Сначала настройте конфигурацию в файле .env"
-    exit 1
-fi
-
+echo ""
+echo "🚀 Запуск бота..."
+python bot.py

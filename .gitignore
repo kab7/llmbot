@@ -12,4 +12,7 @@ ENV/
 .idea/
 .claude/
 *.log
+schedules.json
 .DS_Store
+.coverage
+htmlcov/

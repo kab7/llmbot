@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+addopts = "--cov --cov-report=term-missing"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = [
+  "bot",
+  "config",
+  "llm_runtime",
+]
+
+[tool.coverage.report]
+fail_under = 50
+show_missing = true

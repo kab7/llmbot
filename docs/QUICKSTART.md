@@ -33,10 +33,10 @@ cd llmbot
 3. Создайте приложение
 4. Скопируйте `api_id` и `api_hash`
 
-### 3.3 Eliza API OAuth Token (обязательно)
-1. Перейдите на https://wiki.yandex-team.ru/eliza/api/
-2. Получите OAuth токен
-3. Этот токен используется для доступа к DeepSeek и Alice AI моделям
+### 3.3 OpenRouter API Key (опционально)
+1. Перейдите на https://openrouter.ai/keys
+2. Создайте API ключ
+3. Ключ можно задать в `.env` или позже через `/settoken`
 
 ### 3.4 Ваш Telegram ID
 1. Откройте [@userinfobot](https://t.me/userinfobot)
@@ -61,9 +61,11 @@ TELEGRAM_API_ID=12345678
 TELEGRAM_API_HASH=abcdef123456...
 TELEGRAM_PHONE=+79991234567
 
-# Eliza API (используется для DeepSeek и Alice AI)
-# Получите токен: https://wiki.yandex-team.ru/eliza/api/
-ELIZA_TOKEN=y0_your_oauth_token_here
+# OpenRouter-compatible LLM API (опционально)
+# Получите токен: https://openrouter.ai/keys
+PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
 
 # Admin
 ADMIN_USER_ID=987654321
@@ -95,11 +97,6 @@ chmod 600 .env
 
 ### Примеры команд:
 
-**Обзор непрочитанных:**
-```
-/unread            # Список всех каналов с непрочитанными
-```
-
 **Простая суммаризация:**
 ```
 Суммаризируй чат Работа за последнюю неделю
@@ -109,7 +106,6 @@ chmod 600 .env
 ```
 Что сегодня писали в чате Команда?
 Покажи чат Поддержка за последний час
-Что в непрочитанных в чате Проект?
 Дай последние 500 сообщений из чата Разработка
 ```
 
@@ -128,26 +124,32 @@ chmod 600 .env
 **Полезные команды:**
 ```
 /help              # Показать все команды
-/unread            # Список каналов с непрочитанными
 /context           # Показать текущий контекст
 /reset             # Сбросить контекст
+/llmconfig         # Показать текущие LLM настройки
+/seturl <url>      # Поменять endpoint LLM API
+/setmodel <model>  # Поменять модель
+/settoken <token>  # Поменять токен
 ```
 
 ## Команды бота
 
 - `/start` - приветствие и информация о боте
 - `/help` - показать все доступные команды
-- `/unread` - список незамьюченных каналов с непрочитанными (с упоминаниями помечены 🔔)
 - `/context` - показать текущий контекст (последний чат и период)
 - `/reset` - сбросить контекст
+- `/llmconfig` - показать текущие LLM настройки
+- `/seturl <url>` - задать URL OpenAI-compatible API
+- `/setmodel <model>` - задать модель
+- `/settoken <token>` - задать токен
 
-**Модели (фиксированные, задаются в config.py):**
-- Парсинг команд: DeepSeek v3.1 Terminus
-- Обработка переписок: Alice AI LLM (235B)
+**LLM runtime:**
+- URL, токен и модель задаются в `config.py` по умолчанию
+- Во время работы могут быть переопределены через `/seturl`, `/settoken`, `/setmodel`
 
 ## Что дальше?
 
-- 📖 [README.md](README.md) - полная документация
+- 📖 [README.md](../README.md) - полная документация
 - 📝 [EXAMPLES.md](EXAMPLES.md) - больше примеров использования
 - ❓ [FAQ.md](FAQ.md) - часто задаваемые вопросы
 - 🔧 [INSTALL.md](INSTALL.md) - подробная установка
@@ -155,7 +157,7 @@ chmod 600 .env
 ## Возникли проблемы?
 
 1. Проверьте логи в консоли
-2. Запустите `python check_config.py`
+2. Запустите `python bot.py` и проверьте подсказки в логах
 3. Посмотрите [FAQ.md](FAQ.md)
 
 **Готово! Наслаждайтесь использованием бота! 🎉**
