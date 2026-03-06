@@ -48,14 +48,20 @@ class LLMRuntimeConfig:
         fallback_token: str | None = None,
         fallback_model: str | None = None,
     ):
+        self._fallback_inherits_primary = fallback_token is None
         self._settings = LLMSettings(
             url=normalize_chat_completions_url(url),
             token=(token or "").strip(),
             model=self._normalize_model(model),
         )
+        fallback_token_value = (
+            self._settings.token
+            if self._fallback_inherits_primary
+            else (fallback_token or "").strip()
+        )
         self._fallback_settings = LLMSettings(
             url=normalize_chat_completions_url(fallback_url or DEFAULT_OPENROUTER_URL),
-            token=(token if fallback_token is None else fallback_token or "").strip(),
+            token=fallback_token_value,
             model=self._normalize_model(fallback_model or DEFAULT_FALLBACK_MODEL),
         )
 
@@ -70,16 +76,34 @@ class LLMRuntimeConfig:
         self._settings.url = normalize_chat_completions_url(url)
         return self._settings.url
 
+    def set_fallback_url(self, url: str) -> str:
+        self._fallback_settings.url = normalize_chat_completions_url(url)
+        return self._fallback_settings.url
+
     def set_token(self, token: str) -> str:
         value = (token or "").strip()
         if not value:
             raise ValueError("Токен не может быть пустым")
         self._settings.token = value
+        if self._fallback_inherits_primary:
+            self._fallback_settings.token = value
         return self._settings.masked_token()
+
+    def set_fallback_token(self, token: str) -> str:
+        value = (token or "").strip()
+        if not value:
+            raise ValueError("Токен не может быть пустым")
+        self._fallback_settings.token = value
+        self._fallback_inherits_primary = False
+        return self._fallback_settings.masked_token()
 
     def set_model(self, model: str) -> str:
         self._settings.model = self._normalize_model(model)
         return self._settings.model
+
+    def set_fallback_model(self, model: str) -> str:
+        self._fallback_settings.model = self._normalize_model(model)
+        return self._fallback_settings.model
 
     def has_token(self) -> bool:
         return bool(self._settings.token)

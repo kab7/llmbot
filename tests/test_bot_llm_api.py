@@ -59,6 +59,39 @@ def test_call_llm_api_success(monkeypatch):
     assert captured["headers"]["Authorization"].startswith("Bearer ")
 
 
+def test_call_llm_api_with_meta_success(monkeypatch):
+    _set_runtime_token(monkeypatch)
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok-answer"}}]})
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
+
+    assert answer["content"] == "ok-answer"
+    assert answer["model"] == "model/test"
+    assert answer["url"].startswith("https://openrouter.ai/")
+
+
+def test_call_llm_api_with_meta_uses_actual_model_from_response(monkeypatch):
+    _set_runtime_token(monkeypatch)
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        return DummyResponse(
+            200,
+            {
+                "model": "arcee-ai/trinity-large-preview:free",
+                "choices": [{"message": {"content": "ok-answer"}}],
+            },
+        )
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
+
+    assert answer["content"] == "ok-answer"
+    assert answer["model"] == "arcee-ai/trinity-large-preview:free"
+
+
 def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):
     _set_runtime_token(monkeypatch)
     monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
@@ -232,25 +265,79 @@ def test_parse_command_with_gpt_schedule_fields(monkeypatch):
 def test_process_chat_with_openai(monkeypatch):
     captured = {}
 
-    def fake_call(messages):
+    def fake_call(messages, candidates_override=None):
         captured["messages"] = messages
-        return "summary"
+        captured["override"] = candidates_override
+        return {
+            "content": "summary",
+            "model": "model/test",
+            "url": "https://openrouter.ai/api/v1/chat/completions",
+        }
 
-    monkeypatch.setattr(bot, "call_llm_api", fake_call)
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
     result = asyncio.run(
         bot.process_chat_with_openai("secret data", "сумм", "последний день")
     )
-    assert result == "summary"
+    assert "summary" in result
+    assert "Модель: `model/test`" in result
     payload = captured["messages"][1]["content"]
     assert "secret data" in payload
     assert "[PII]" not in payload
+    assert captured["override"] is None
 
-    def raise_error(messages):
+    def raise_error(messages, candidates_override=None):
         raise Exception("boom")
 
-    monkeypatch.setattr(bot, "call_llm_api", raise_error)
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", raise_error)
     result_error = asyncio.run(bot.process_chat_with_openai("data", "q"))
     assert result_error.startswith("❌ ")
+
+
+def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "primary/model",
+            fallback_url="https://fallback.example/v1",
+            fallback_token="fallback-token-5678",
+            fallback_model="fallback/model",
+        ),
+    )
+
+    def fake_call(messages, candidates_override=None):
+        calls.append(candidates_override)
+        if candidates_override:
+            return {
+                "content": "Нормальная краткая суммаризация без артефактов.",
+                "model": "fallback/model",
+                "url": "https://fallback.example/v1/chat/completions",
+            }
+        return {
+            "content": 'Снижение ручного кодирования,.attr(loading="lazy") и мусор в录入 тексте',
+            "model": "primary/model",
+            "url": "https://primary.example/v1/chat/completions",
+        }
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+    result = asyncio.run(
+        bot.process_chat_with_openai(
+            "[2026-03-06 21:57:33] User: текст",
+            "суммаризируй",
+            "последние 1 день",
+        )
+    )
+
+    assert len(calls) == 2
+    assert calls[0] is None
+    assert isinstance(calls[1], list)
+    assert calls[1][0].model == "fallback/model"
+    assert "Нормальная краткая суммаризация" in result
+    assert "Модель: `fallback/model`" in result
 
 
 def test_get_chat_history_empty_returns_empty_string(monkeypatch):

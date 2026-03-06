@@ -66,7 +66,13 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
     assert rec["next_run"]
     assert "каждый день" in recurrence_to_text(rec)
 
-    file_path = tmp_path / "schedules.json"
+    file_path = tmp_path / "schedules.db"
     save_schedules(file_path, [rec])
     loaded = load_schedules(file_path)
     assert loaded and loaded[0]["id"] == rec["id"]
+
+
+def test_load_schedules_invalid_sqlite_returns_empty(tmp_path: Path):
+    file_path = tmp_path / "schedules.db"
+    file_path.write_text("{not-a-sqlite-db", encoding="utf-8")
+    assert load_schedules(file_path) == []

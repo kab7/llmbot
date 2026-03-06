@@ -36,9 +36,10 @@
 
 Бот использует runtime-модель, настроенную в `config.py` по умолчанию.
 Переопределение доступно через команды:
-- `/setmodel` — сменить модель
-- `/seturl` — сменить endpoint
-- `/settoken` — сменить ключ
+- `/setmodel [primary|fallback] <model>` — сменить модель
+- `/seturl [primary|fallback] <url>` — сменить endpoint
+- `/settoken [primary|fallback] <token>` — сменить ключ
+- `/limits [primary|fallback]` — посмотреть лимиты/квоты ключа
 
 ## Использование
 

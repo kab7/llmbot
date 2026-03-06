@@ -63,6 +63,7 @@ def test_runtime_setters_and_get_copy():
 
     assert cfg.set_url("https://host/v1") == "https://host/v1/chat/completions"
     assert cfg.set_model(" model/two ") == "model/two"
+    assert cfg.set_fallback_model(" fallback/model ") == "fallback/model"
     assert cfg.set_token(" new-token-123456 ") == "new-...3456"
 
     snapshot = cfg.get_settings()
@@ -74,6 +75,10 @@ def test_runtime_setters_and_get_copy():
     assert stable.url == "https://host/v1/chat/completions"
     assert stable.model == "model/two"
     assert stable.token == "new-token-123456"
+
+    fallback = cfg.get_fallback_settings()
+    assert fallback.token == "new-token-123456"
+    assert fallback.model == "fallback/model"
 
 
 def test_runtime_fallback_overrides_and_candidates():
@@ -131,6 +136,35 @@ def test_runtime_setters_validation():
 
     with pytest.raises(ValueError, match="пустой"):
         cfg.set_model("  ")
+    with pytest.raises(ValueError, match="пустой"):
+        cfg.set_fallback_model("  ")
 
     with pytest.raises(ValueError, match="http:// или https://"):
         cfg.set_url("bad-url")
+
+    with pytest.raises(ValueError, match="пустым"):
+        cfg.set_fallback_token("   ")
+
+    with pytest.raises(ValueError, match="http:// или https://"):
+        cfg.set_fallback_url("bad-url")
+
+
+def test_runtime_fallback_token_can_be_set_independently():
+    cfg = LLMRuntimeConfig(
+        "https://openrouter.ai/api/v1", "primary-token-1", "model/one"
+    )
+    cfg.set_fallback_token("fallback-token-2")
+    cfg.set_token("primary-token-3")
+
+    assert cfg.get_settings().token == "primary-token-3"
+    assert cfg.get_fallback_settings().token == "fallback-token-2"
+
+
+def test_runtime_fallback_url_setter():
+    cfg = LLMRuntimeConfig(
+        "https://openrouter.ai/api/v1", "primary-token-1", "model/one"
+    )
+    assert (
+        cfg.set_fallback_url("https://fallback.example/v1")
+        == "https://fallback.example/v1/chat/completions"
+    )

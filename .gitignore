@@ -12,7 +12,12 @@ ENV/
 .idea/
 .claude/
 *.log
-schedules.json
+llm_traffic.log
+llm_traffic.log.*
+schedules.db
+schedules.db-journal
+schedules.db-shm
+schedules.db-wal
 .DS_Store
 .coverage
 htmlcov/

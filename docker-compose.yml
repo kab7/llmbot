@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    container_name: llmbot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - SESSION_NAME=/data/telethon_session
+      - SCHEDULES_FILE=/data/schedules.db
+      - LOG_FILE_PATH=/data/bot.log
+      - LLM_TRAFFIC_LOG_PATH=/data/llm_traffic.log
+      - TZ=Europe/Moscow
+    volumes:
+      - /data/srv/data/llmbot:/data
+      - ./.env:/app/.env

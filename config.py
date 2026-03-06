@@ -31,13 +31,23 @@ ADMIN_USER_ID = _parse_int_env("ADMIN_USER_ID", 0)
 # Это БЕЗОПАСНО: файл содержит зашифрованные данные авторизации.
 # Файл автоматически добавлен в .gitignore.
 # Рекомендуется установить права доступа: chmod 600 telethon_session.session
-SESSION_NAME = "telethon_session"
+SESSION_NAME = os.getenv("SESSION_NAME", "telethon_session")
 
 # Настройки по умолчанию
 # Количество сообщений для загрузки, если период не указан
 DEFAULT_MESSAGES_LIMIT = 300
 LLM_REQUEST_TIMEOUT_SECONDS = max(5, _parse_int_env("LLM_REQUEST_TIMEOUT_SECONDS", 20))
 LLM_MAX_RETRIES = max(1, _parse_int_env("LLM_MAX_RETRIES", 3))
+LOG_FILE_PATH = (os.getenv("LOG_FILE_PATH") or "bot.log").strip() or "bot.log"
+LOG_MAX_BYTES = max(1024 * 1024, _parse_int_env("LOG_MAX_BYTES", 5 * 1024 * 1024))
+LOG_BACKUP_COUNT = max(1, _parse_int_env("LOG_BACKUP_COUNT", 5))
+LLM_TRAFFIC_LOG_PATH = (
+    os.getenv("LLM_TRAFFIC_LOG_PATH") or "llm_traffic.log"
+).strip() or "llm_traffic.log"
+LLM_TRAFFIC_LOG_MAX_BYTES = max(
+    1024 * 1024, _parse_int_env("LLM_TRAFFIC_LOG_MAX_BYTES", 20 * 1024 * 1024)
+)
+LLM_TRAFFIC_LOG_BACKUP_COUNT = max(1, _parse_int_env("LLM_TRAFFIC_LOG_BACKUP_COUNT", 5))
 
 # LLM настройки по умолчанию (OpenRouter-compatible API)
 # Можно переопределить через команды /seturl /settoken /setmodel во время работы бота.
@@ -113,84 +123,111 @@ def get_config_issues() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
 
 
 # Промпты для LLM моделей
-PARSER_PROMPT = """Ты - парсер команд для бота, который работает с историей Telegram чатов.
-Твоя задача - извлечь из текста пользователя название чата/папки, период и запрос.
+PARSER_PROMPT = """Ты - детерминированный парсер команд Telegram-бота.
+Верни ТОЛЬКО один валидный JSON-объект, без markdown и без пояснений.
+Ответ должен быть валидным JSON.
 
-ВАЖНО: Если чат/папка или период НЕ УКАЗАНЫ явно в сообщении, возвращай null для этих полей.
-
-Формат ответа (JSON):
+Верни РОВНО эти 9 ключей (без дополнительных):
 {
-    "target_type": "chat" | "folder" | null,
-    "target_name": "название чата/папки" | null,
-    "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | null,
-    "period_value": число (дней/часов/сообщений) | null,
-    "mark_as_read": true | false,
-    "query": "полный текст запроса пользователя",
-    "recurrence_type": "daily" | "weekly" | "monthly" | "interval_days" | null,
-    "interval_days": число | null,
-    "time": "HH:MM" | null
+  "target_type": "chat" | "folder" | null,
+  "target_name": string | null,
+  "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | null,
+  "period_value": integer | null,
+  "mark_as_read": boolean,
+  "query": string | null,
+  "recurrence_type": "daily" | "weekly" | "monthly" | "interval_days" | null,
+  "interval_days": integer | null,
+  "time": "HH:MM" | null
 }
 
-target_type определяет тип цели:
-- "chat" - если пользователь указал конкретный чат ("в чате X", "из чата Y", "чат Z")
-- "folder" - если пользователь указал папку ("в папке X", "из папки Y", "папка Z")
-- null - если не указано явно
+Общие правила:
+1. Ничего не выдумывай. Если сущность не указана явно, ставь null.
+2. target_type:
+   - "chat" для "в чате ...", "из чата ...", "чат ..."
+   - "folder" для "в папке ...", "из папки ...", "папка ..."
+3. target_name: только имя цели без служебных слов, лишние кавычки/пробелы убери.
+4. query: исходный текст запроса пользователя целиком (как есть по смыслу; не сокращай до одного слова).
+5. mark_as_read=true, если есть явное намерение отметить прочитанным:
+   "отметь/пометь как прочитанные", "mark as read", "read all", и т.п. Иначе false.
 
-mark_as_read определяет, нужно ли отметить сообщения прочитанными:
-- true - если пользователь попросил "отметь прочитанным", "пометь прочитанным", "и отметь прочитанным"
-- false - по умолчанию
+Период:
+1. Если явно есть "непрочитанные"/"unread", всегда period_type="unread", period_value=null.
+2. Если период не указан явно, верни period_type=null и period_value=null.
+3. Для period_type:
+   - "days": "за N дней", "за неделю" -> 7, "за сутки"/"вчера" -> 1
+   - "hours": "за N часов", "за последний час" -> 1
+   - "today": "сегодня"
+   - "last_messages": "последние N сообщений"
+4. Для period_type в {"days","hours","last_messages"} period_value обязан быть целым числом > 0.
+   В остальных случаях period_value=null.
 
-Типы периодов:
-- "days" - за последние N дней (period_value = количество дней)
-  - Для "вчера" используй: "period_type": "days", "period_value": 1
-  - Для "за неделю" используй: "period_type": "days", "period_value": 7
-  - Для "за сутки" используй: "period_type": "days", "period_value": 1
-- "hours" - за последние N часов (period_value = количество часов)
-  - Для "за последний час" используй: "period_type": "hours", "period_value": 1
-  - Для "за последние 5 часов" используй: "period_type": "hours", "period_value": 5
-- "today" - сегодня с начала суток до текущего момента (period_value = null)
-- "last_messages" - последние N сообщений (period_value = количество сообщений)
-  - Для "последние 100 сообщений" используй: "period_type": "last_messages", "period_value": 100
-  - Для "последние 1000 сообщений" используй: "period_type": "last_messages", "period_value": 1000
-- "unread" - непрочитанные сообщения в выбранных чатах (period_value = null)
-  - Для "все непрочитанные", "непрочитанные сообщения" используй: "period_type": "unread", "period_value": null
-- null - период не указан (будет использован предыдущий или по умолчанию)
+Расписание:
+1. Если расписание не указано, recurrence_type=null, interval_days=null, time=null.
+2. "каждый день"/"ежедневно" -> recurrence_type="daily"
+3. "каждую неделю"/"еженедельно" -> recurrence_type="weekly"
+4. "каждый месяц"/"ежемесячно" -> recurrence_type="monthly"
+5. "раз в N дней" -> recurrence_type="interval_days", interval_days=N
+6. Если recurrence_type != "interval_days", interval_days=null.
+7. Если время указано, нормализуй к формату HH:MM (24h), например:
+   "8 вечера" -> "20:00", "9 утра" -> "09:00".
+8. Если расписание есть, но время не указано, time=null.
 
-Правила по расписанию:
-- Если периодичность не указана, верни: "recurrence_type": null, "interval_days": null, "time": null
-- Для "каждый день", "ежедневно": "recurrence_type": "daily"
-- Для "каждую неделю", "еженедельно": "recurrence_type": "weekly"
-- Для "каждый месяц", "ежемесячно": "recurrence_type": "monthly"
-- Для "раз в N дней": "recurrence_type": "interval_days", "interval_days": N
-- Если периодичность есть, но время не указано: time = null
-- Если время указано, нормализуй к формату HH:MM (24-часовой)
+Самопроверка перед ответом:
+- JSON валиден;
+- есть все 9 ключей;
+- типы значений соответствуют схеме;
+- никаких комментариев/текста вне JSON.
+
+Критичные уточнения:
+- "за вчера" и "за сутки" это period_type="days", period_value=1 (НЕ "today").
+- Если нет явного запроса "непрочитанные", не ставь period_type="unread".
+- Если нет явного запроса "отметь как прочитанные", ставь mark_as_read=false.
 
 Примеры:
-- "Суммаризируй что происходило в чате Работа за последние сутки" -> {"target_type": "chat", "target_name": "Работа", "period_type": "days", "period_value": 1, "mark_as_read": false, "query": "Суммаризируй что происходило"}
-- "Что обсуждали в чате Проект за последний час и отметь прочитанным?" -> {"target_type": "chat", "target_name": "Проект", "period_type": "hours", "period_value": 1, "mark_as_read": true, "query": "Что обсуждали"}
-- "Что нового в папке Рабочие чаты?" -> {"target_type": "folder", "target_name": "Рабочие чаты", "period_type": null, "period_value": null, "mark_as_read": false, "query": "Что нового"}
-- "Суммаризируй папку Личное за неделю и пометь прочитанным" -> {"target_type": "folder", "target_name": "Личное", "period_type": "days", "period_value": 7, "mark_as_read": true, "query": "Суммаризируй"}
-- "Что сегодня писали в папке Работа?" -> {"target_type": "folder", "target_name": "Работа", "period_type": "today", "period_value": null, "mark_as_read": false, "query": "Что писали"}
-- "Покажи последние 500 сообщений из чата Работа и отметь прочитанным" -> {"target_type": "chat", "target_name": "Работа", "period_type": "last_messages", "period_value": 500, "mark_as_read": true, "query": "Покажи"}
-- "Суммаризируй папку AI, все непрочитанные сообщения и отметь как прочитанные" -> {"target_type": "folder", "target_name": "AI", "period_type": "unread", "period_value": null, "mark_as_read": true, "query": "Суммаризируй"}
-- "Суммаризируй папку AI, все непрочитанные сообщения каждый день в 20:00 и отмечай прочитанными" -> {"target_type": "folder", "target_name": "AI", "period_type": "unread", "period_value": null, "mark_as_read": true, "query": "Суммаризируй", "recurrence_type": "daily", "interval_days": null, "time": "20:00"}
-- "О чем говорили?" -> {"target_type": null, "target_name": null, "period_type": null, "period_value": null, "mark_as_read": false, "query": "О чем говорили?"}
-- "До чего договорились в чате Проект?" -> {"target_type": "chat", "target_name": "Проект", "period_type": null, "period_value": null, "mark_as_read": false, "query": "До чего договорились?"}
+Пользователь: "суммаризируй все чаты в папке AI за вчера"
+Ответ:
+{"target_type":"folder","target_name":"AI","period_type":"days","period_value":1,"mark_as_read":false,"query":"суммаризируй все чаты в папке AI за вчера","recurrence_type":null,"interval_days":null,"time":null}
 
-Отвечай ТОЛЬКО валидным JSON, без дополнительного текста."""
+Пользователь: "суммаризируй непрочитанные в чате Работа и отметь как прочитанные"
+Ответ:
+{"target_type":"chat","target_name":"Работа","period_type":"unread","period_value":null,"mark_as_read":true,"query":"суммаризируй непрочитанные в чате Работа и отметь как прочитанные","recurrence_type":null,"interval_days":null,"time":null}
 
-PROCESSOR_PROMPT = """Ты - умный ассистент, который работает с историей Telegram чатов.
-Пользователь предоставляет тебе историю переписки и свой запрос.
+Пользователь: "покажи последние 300 сообщений из чата Release"
+Ответ:
+{"target_type":"chat","target_name":"Release","period_type":"last_messages","period_value":300,"mark_as_read":false,"query":"покажи последние 300 сообщений из чата Release","recurrence_type":null,"interval_days":null,"time":null}
 
-Твои возможности:
-- Суммаризация переписок (краткое резюме основных тем, решений, планов)
-- Ответы на вопросы о содержании чата
-- Поиск конкретной информации в истории
-- Анализ договоренностей и следующих шагов
+Пользователь: "суммаризируй чат DevOps каждый день в 20:00"
+Ответ:
+{"target_type":"chat","target_name":"DevOps","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй чат DevOps каждый день в 20:00","recurrence_type":"daily","interval_days":null,"time":"20:00"}
 
-Правила:
-1. Отвечай на основе ТОЛЬКО той информации, что есть в истории чата
-2. Если информации недостаточно для ответа, честно скажи об этом
-3. Будь конкретным и ссылайся на конкретные сообщения где возможно
-4. Если просят суммаризацию - структурируй ответ (темы, решения, планы, даты)
-5. Отвечай на русском языке четко и по делу"""
+Пользователь: "суммаризируй папку AI раз в 3 дня в 19:30"
+Ответ:
+{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
+"""
+
+PROCESSOR_PROMPT = """Ты - аналитик, который работает с историей Telegram чатов.
+Отвечай только на основе предоставленной истории и запроса пользователя.
+
+Строгие правила:
+1. Не выдумывай факты, события и цитаты.
+2. Если данных не хватает, явно напиши, чего именно не хватает.
+3. Сохраняй техническую точность: версии, команды, числа, сроки, имена сервисов.
+4. Если есть неопределенность или противоречия в сообщениях, пометь это явно.
+5. Пиши на русском, кратко и по делу.
+
+Режим по умолчанию для суммаризации:
+- Давай просто хорошую, понятную выжимку содержания.
+- Используй нейтральный формат без лишних обязательных разделов.
+- Форматируй ответ в легком markdown:
+  заголовки `##`, списки `-`, акценты `**...**`, ссылки `[текст](url)`,
+  инлайн-код `` `...` ``.
+- Не добавляй блоки "Решения", "Задачи", "Риски", "Открытые вопросы" и т.п.,
+  если пользователь явно этого не просил.
+
+Если пользователь явно просит конкретный срез (например: "что решили", "какие риски",
+"отдельно выдели открытые вопросы", "покажи next steps"), тогда выдели именно этот срез
+отдельным блоком. Если в истории таких данных нет, прямо напиши, что не найдено.
+
+Если запрос не про суммаризацию, отвечай точно по вопросу. При необходимости добавь
+короткий блок "Основание" с 1-3 фактами из истории.
+"""

@@ -1,4 +1,5 @@
-import json
+import logging
+import sqlite3
 from calendar import monthrange
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,63 @@ RECURRENCE_DAILY = "daily"
 RECURRENCE_WEEKLY = "weekly"
 RECURRENCE_MONTHLY = "monthly"
 RECURRENCE_INTERVAL_DAYS = "interval_days"
+logger = logging.getLogger(__name__)
+
+_SCHEDULE_COLUMNS = [
+    "id",
+    "created_at",
+    "last_run",
+    "next_run",
+    "chat_id",
+    "target_type",
+    "target_name",
+    "period_type",
+    "period_value",
+    "query",
+    "mark_as_read",
+    "recurrence_type",
+    "time",
+    "interval_days",
+    "weekday",
+    "day_of_month",
+]
+
+
+def _open_db(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedules (
+            id TEXT PRIMARY KEY,
+            created_at TEXT,
+            last_run TEXT,
+            next_run TEXT,
+            chat_id INTEGER NOT NULL,
+            target_type TEXT NOT NULL,
+            target_name TEXT NOT NULL,
+            period_type TEXT,
+            period_value INTEGER,
+            query TEXT NOT NULL,
+            mark_as_read INTEGER NOT NULL,
+            recurrence_type TEXT NOT NULL,
+            time TEXT NOT NULL,
+            interval_days INTEGER,
+            weekday INTEGER,
+            day_of_month INTEGER
+        )
+        """
+    )
+
+
+def _row_to_schedule(row: sqlite3.Row) -> dict[str, Any]:
+    schedule = {key: row[key] for key in _SCHEDULE_COLUMNS}
+    schedule["mark_as_read"] = bool(schedule["mark_as_read"])
+    return schedule
 
 
 def _parse_time_hhmm(value: str) -> tuple[int, int]:
@@ -134,21 +192,69 @@ def build_schedule_record(
 
 
 def load_schedules(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+    try:
+        with _open_db(path) as conn:
+            _ensure_schema(conn)
+            rows = conn.execute(
+                f"SELECT {', '.join(_SCHEDULE_COLUMNS)} FROM schedules ORDER BY rowid"
+            ).fetchall()
+    except sqlite3.DatabaseError as e:
+        logger.error(f"Некорректная SQLite база расписаний в {path}: {e}")
         return []
-    raw = path.read_text(encoding="utf-8").strip()
-    if not raw:
-        return []
-    data = json.loads(raw)
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    return [_row_to_schedule(row) for row in rows]
 
 
 def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
-    path.write_text(
-        json.dumps(schedules, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    rows = []
+    for schedule in schedules:
+        rows.append(
+            (
+                schedule.get("id"),
+                schedule.get("created_at"),
+                schedule.get("last_run"),
+                schedule.get("next_run"),
+                int(schedule.get("chat_id")),
+                schedule.get("target_type"),
+                schedule.get("target_name"),
+                schedule.get("period_type"),
+                schedule.get("period_value"),
+                schedule.get("query") or "",
+                1 if schedule.get("mark_as_read") else 0,
+                schedule.get("recurrence_type"),
+                schedule.get("time"),
+                schedule.get("interval_days"),
+                schedule.get("weekday"),
+                schedule.get("day_of_month"),
+            )
+        )
+
+    with _open_db(path) as conn:
+        _ensure_schema(conn)
+        conn.execute("DELETE FROM schedules")
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO schedules (
+                    id,
+                    created_at,
+                    last_run,
+                    next_run,
+                    chat_id,
+                    target_type,
+                    target_name,
+                    period_type,
+                    period_value,
+                    query,
+                    mark_as_read,
+                    recurrence_type,
+                    time,
+                    interval_days,
+                    weekday,
+                    day_of_month
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
 
 
 def recurrence_to_text(schedule: dict[str, Any]) -> str:

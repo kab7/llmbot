@@ -143,9 +143,14 @@ python bot.py
 - `/context` - показать текущий контекст (последний чат и период)
 - `/reset` - сбросить контекст
 - `/llmconfig` - показать текущие runtime-настройки LLM
-- `/seturl <url>` - задать URL OpenAI-compatible endpoint
-- `/setmodel <model>` - задать модель
-- `/settoken <token>` - задать API ключ
+- `/limits [primary|fallback]` - показать лимиты/квоты API ключа
+- `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible endpoint
+- `/setmodel [primary|fallback] <model>` - задать модель
+- `/settoken [primary|fallback] <token>` - задать API ключ
+
+Команды `/seturl`, `/setmodel`, `/settoken` сохраняют изменения в `.env`, поэтому настройки сохраняются после перезапуска.
+Периодические расписания суммаризации сохраняются в локальной SQLite базе `schedules.db`.
+Логи пишутся в `bot.log` и `llm_traffic.log` с ротацией (`LOG_*` и `LLM_TRAFFIC_LOG_*` в `.env`).
 
 ### Настройки в config.py и через чат
 
@@ -163,8 +168,9 @@ DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
 
 ### Используемые модели
 
-Бот использует одну runtime-модель для парсинга команд и анализа переписок.
-По умолчанию задана `meta-llama/llama-3.3-70b-instruct:free`, но ее можно менять через `/setmodel`.
+Бот использует primary + fallback runtime-модели для парсинга команд и анализа переписок.
+По умолчанию primary — `meta-llama/llama-3.3-70b-instruct:free`, fallback — `openrouter/free`.
+Изменение через `/setmodel primary <model>` и `/setmodel fallback <model>`.
 
 ## Использование
 

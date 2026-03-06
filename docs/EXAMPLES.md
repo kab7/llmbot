@@ -245,9 +245,9 @@
 
 **LLM runtime (настраиваемый):**
 - `/llmconfig` — посмотреть текущие параметры
-- `/setmodel` — сменить модель
-- `/seturl` — сменить endpoint
-- `/settoken` — сменить токен
+- `/setmodel [primary|fallback] <model>` — сменить модель
+- `/seturl [primary|fallback] <url>` — сменить endpoint
+- `/settoken [primary|fallback] <token>` — сменить токен
 
 ## Продвинутые сценарии
 

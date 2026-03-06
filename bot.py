@@ -1,13 +1,18 @@
 import asyncio
+import html
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 import json
 import requests
 import time
+from logging.handlers import RotatingFileHandler
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from telegram import Update
 from telegram.ext import (
@@ -40,6 +45,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _setup_file_logging() -> None:
+    root_logger = logging.getLogger()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    if not any(
+        isinstance(handler, RotatingFileHandler)
+        and getattr(handler, "baseFilename", "").endswith(config.LOG_FILE_PATH)
+        for handler in root_logger.handlers
+    ):
+        bot_file_handler = RotatingFileHandler(
+            config.LOG_FILE_PATH,
+            maxBytes=config.LOG_MAX_BYTES,
+            backupCount=config.LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        bot_file_handler.setFormatter(formatter)
+        root_logger.addHandler(bot_file_handler)
+
+    llm_logger = logging.getLogger("llm_traffic")
+    llm_logger.setLevel(logging.INFO)
+    llm_logger.propagate = False
+    if not any(
+        isinstance(handler, RotatingFileHandler) for handler in llm_logger.handlers
+    ):
+        llm_file_handler = RotatingFileHandler(
+            config.LLM_TRAFFIC_LOG_PATH,
+            maxBytes=config.LLM_TRAFFIC_LOG_MAX_BYTES,
+            backupCount=config.LLM_TRAFFIC_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        llm_file_handler.setFormatter(formatter)
+        llm_logger.addHandler(llm_file_handler)
+
+
+_setup_file_logging()
+llm_traffic_logger = logging.getLogger("llm_traffic")
+
 # Включаем логирование сетевых запросов
 logging.getLogger("httpx").setLevel(logging.INFO)
 logging.getLogger("httpcore").setLevel(logging.INFO)
@@ -57,7 +102,8 @@ telethon_client: Optional[TelegramClient] = None
 # Текущий контекст (чат и период)
 # {"chat_name": str, "period_type": str, "period_value": int}
 current_context: Dict[str, Any] = {}
-SCHEDULES_FILE = Path("schedules.json")
+ENV_FILE = Path(".env")
+SCHEDULES_FILE = Path((os.getenv("SCHEDULES_FILE") or "schedules.db").strip())
 schedules_lock = asyncio.Lock()
 scheduler: Optional[AsyncIOScheduler] = None
 application_ref: Optional[Application] = None
@@ -90,6 +136,54 @@ EMOJI_PATTERN = re.compile(
 
 ALLOWED_TARGET_TYPES = {"chat", "folder", None}
 ALLOWED_PERIOD_TYPES = {"days", "hours", "today", "last_messages", "unread", None}
+MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+UNREAD_INTENT_PATTERN = re.compile(r"(непрочитан|unread)", flags=re.IGNORECASE)
+MARK_AS_READ_INTENT_PATTERN = re.compile(
+    r"("
+    r"отмет\w*(?:\s+\w+){0,3}\s+(?:как\s+)?прочитан\w*"
+    r"|помет\w*(?:\s+\w+){0,3}\s+(?:как\s+)?прочитан\w*"
+    r"|mark(?:\s+\w+){0,3}\s+as\s+read"
+    r"|read\s+all"
+    r")",
+    flags=re.IGNORECASE,
+)
+SCHEDULE_INTENT_PATTERN = re.compile(
+    r"\b("
+    r"кажд(?:ый|ую|ые|ое)\s+(?:день|недел\w*|месяц)"
+    r"|ежедневно|еженедельно|ежемесячно"
+    r"|раз\s+в\s+\d+\s*(?:дн|дня|дней)"
+    r"|every\s+(?:day|week|month)"
+    r"|daily|weekly|monthly"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+SUMMARY_ARTIFACT_PATTERN = re.compile(
+    r"(\.attr\s*\(|loading\s*=\s*['\"]?lazy['\"]?|</?[a-z][^>]*>|function\s*\(|\$\()",
+    flags=re.IGNORECASE,
+)
+UNEXPECTED_SCRIPT_PATTERN = re.compile(
+    r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0900-\u097f]"
+)
+RU_DATE_PATTERN = re.compile(
+    r"\b([0-3]?\d)\s+"
+    r"(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+"
+    r"(20\d{2})\b",
+    flags=re.IGNORECASE,
+)
+RU_MONTHS_GENITIVE = [
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+]
 
 
 def escape_markdown(text: str) -> str:
@@ -172,13 +266,282 @@ def resolve_period_with_context(
     return period_type, period_value
 
 
-def call_llm_api(messages: list) -> str:
-    """Вызов OpenRouter-compatible Chat Completions API."""
+def _looks_like_schedule_request(user_message: Optional[str]) -> bool:
+    text = (user_message or "").strip()
+    if not text:
+        return False
+    return bool(SCHEDULE_INTENT_PATTERN.search(text))
+
+
+def _has_unread_intent(text: Optional[str]) -> bool:
+    return bool(UNREAD_INTENT_PATTERN.search(text or ""))
+
+
+def _has_mark_as_read_intent(text: Optional[str]) -> bool:
+    return bool(MARK_AS_READ_INTENT_PATTERN.search(text or ""))
+
+
+def _infer_explicit_target_type(text: Optional[str]) -> Optional[str]:
+    haystack = (text or "").lower()
+    if re.search(r"\b(папк\w*|folder)\b", haystack):
+        return "folder"
+    if re.search(r"\b(чат\w*|chat)\b", haystack):
+        return "chat"
+    return None
+
+
+def _infer_period_from_text(text: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+    haystack = (text or "").lower()
+
+    if "сегодня" in haystack:
+        return "today", None
+    if re.search(r"\b(вчера|за\s+вчера|за\s+сутк\w*)\b", haystack):
+        return "days", 1
+    if re.search(r"\bза\s+недел\w*\b", haystack):
+        return "days", 7
+
+    m = re.search(r"\bпоследн\w*\s+(\d+)\s+сообщ", haystack)
+    if m:
+        return "last_messages", int(m.group(1))
+
+    m = re.search(
+        r"\b(?:за\s+)?(?:последн\w*\s+)?(\d+)\s*(час|часа|часов|hour|hours)\b", haystack
+    )
+    if m:
+        return "hours", int(m.group(1))
+
+    m = re.search(
+        r"\b(?:за\s+)?(?:последн\w*\s+)?(\d+)\s*(дн|дня|дней|день|day|days)\b", haystack
+    )
+    if m:
+        return "days", int(m.group(1))
+
+    return None, None
+
+
+def _apply_parser_intent_guards(
+    *,
+    user_message: Optional[str],
+    target_type: Optional[str],
+    period_type: Optional[str],
+    period_value: Optional[int],
+    mark_as_read: bool,
+) -> tuple[Optional[str], Optional[str], Optional[int], bool]:
+    explicit_target_type = _infer_explicit_target_type(user_message)
+    if explicit_target_type and target_type != explicit_target_type:
+        logger.warning(
+            "⚠️ Исправляю target_type по явному интенту текста: "
+            f"{target_type} -> {explicit_target_type}"
+        )
+        target_type = explicit_target_type
+
+    if mark_as_read and not _has_mark_as_read_intent(user_message):
+        logger.warning("⚠️ Игнорирую mark_as_read=true без явного запроса в тексте")
+        mark_as_read = False
+
+    if period_type == "unread" and not _has_unread_intent(user_message):
+        inferred_period_type, inferred_period_value = _infer_period_from_text(
+            user_message
+        )
+        logger.warning(
+            "⚠️ Исправляю period_type=unread без явного интента непрочитанного: "
+            f"-> {inferred_period_type}={inferred_period_value}"
+        )
+        period_type = inferred_period_type
+        period_value = inferred_period_value
+
+    inferred_period_type, inferred_period_value = _infer_period_from_text(user_message)
+    explicit_period_conflict = (
+        inferred_period_type is not None
+        and not _has_unread_intent(user_message)
+        and (
+            period_type != inferred_period_type
+            or (
+                inferred_period_type in {"days", "hours", "last_messages"}
+                and period_value != inferred_period_value
+            )
+        )
+    )
+    if explicit_period_conflict:
+        logger.warning(
+            "⚠️ Исправляю период по явному интенту текста: "
+            f"{period_type}={period_value} -> {inferred_period_type}={inferred_period_value}"
+        )
+        period_type = inferred_period_type
+        period_value = inferred_period_value
+
+    return target_type, period_type, period_value, mark_as_read
+
+
+def _apply_schedule_intent_guard(
+    *,
+    schedule_intent: bool,
+    recurrence_type: Optional[str],
+    interval_days: Optional[int],
+    schedule_time: Optional[str],
+    schedule_time_missing: bool,
+    user_message: Optional[str],
+) -> tuple[Optional[str], Optional[int], Optional[str], bool]:
+    """Отключает расписание, если в исходном тексте нет явного periodic-intent."""
+    if not recurrence_type or schedule_intent:
+        return recurrence_type, interval_days, schedule_time, schedule_time_missing
+
+    logger.warning(
+        "⚠️ Игнорирую recurrence_type без явного расписания в запросе. "
+        f"recurrence_type={recurrence_type}, message='{(user_message or '')[:200]}'"
+    )
+    return None, None, None, False
+
+
+def _sanitize_url_for_logs(url: str) -> str:
+    """Скрывает query/credentials в URL перед логированием."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or parsed.netloc
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except Exception:
+        return "<invalid-url>"
+
+
+def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
+    allowed: set[str] = set()
+    for raw_date in re.findall(r"\b(20\d{2})-(\d{2})-(\d{2})\b", chat_history or ""):
+        year_str, month_str, day_str = raw_date
+        try:
+            year = int(year_str)
+            month = int(month_str)
+            day = int(day_str)
+        except ValueError:
+            continue
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            allowed.add(f"{day} {RU_MONTHS_GENITIVE[month - 1]} {year}")
+    return allowed
+
+
+def _count_mixed_script_tokens(text: str) -> int:
+    count = 0
+    for token in re.findall(r"\b[\w.-]{5,}\b", text or ""):
+        has_cyr = bool(re.search(r"[А-Яа-яЁё]", token))
+        has_lat = bool(re.search(r"[A-Za-z]", token))
+        if has_cyr and has_lat:
+            count += 1
+    return count
+
+
+def _analyze_summary_quality(
+    summary_text: str, chat_history: str
+) -> tuple[int, list[str]]:
+    text = summary_text or ""
+    issues: list[str] = []
+    score = 0
+
+    artifact_hits = SUMMARY_ARTIFACT_PATTERN.findall(text)
+    if artifact_hits:
+        issues.append("обнаружены артефакты разметки/кода")
+        score += len(artifact_hits)
+
+    unexpected_script_hits = len(UNEXPECTED_SCRIPT_PATTERN.findall(text))
+    if unexpected_script_hits >= 2:
+        issues.append("обнаружены символы неожиданных письменностей")
+        score += unexpected_script_hits
+
+    mixed_script_tokens = _count_mixed_script_tokens(text)
+    if mixed_script_tokens >= 2:
+        issues.append("обнаружены смешанные кириллическо-латинские токены")
+        score += mixed_script_tokens
+
+    summary_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", text))
+    history_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", chat_history or ""))
+    extra_iso_dates = summary_iso_dates - history_iso_dates
+    if extra_iso_dates:
+        issues.append("обнаружены даты, отсутствующие в исходной истории")
+        score += len(extra_iso_dates)
+
+    allowed_ru_dates = _extract_allowed_ru_dates_from_history(chat_history)
+    summary_ru_dates = {
+        f"{int(day)} {month.lower()} {int(year)}"
+        for day, month, year in RU_DATE_PATTERN.findall(text)
+    }
+    extra_ru_dates = summary_ru_dates - allowed_ru_dates
+    if extra_ru_dates:
+        issues.append("обнаружены русские даты, отсутствующие в исходной истории")
+        score += len(extra_ru_dates)
+
+    return score, issues
+
+
+def _cleanup_summary_text(text: str) -> str:
+    cleaned = text or ""
+    cleaned = re.sub(r"\.attr\s*\([^\n)]*\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?m)[ \t]+$", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _compact_query_for_display(query: Optional[str], max_length: int = 160) -> str:
+    normalized = " ".join((query or "").split())
+    if not normalized:
+        return "(пусто)"
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[: max_length - 3]}..."
+
+
+def _split_text_chunks(text: str, max_length: int = 3900) -> list[str]:
+    if len(text) <= max_length:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_length, len(text))
+        chunks.append(text[start:end])
+        start = end
+    return chunks
+
+
+def _upsert_env_var(key: str, value: str) -> None:
+    """Обновляет или добавляет переменную в .env атомарно."""
+    if not key:
+        raise ValueError("key is required")
+    env_path = ENV_FILE
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(key)}\s*=")
+    new_line = f"{key}={value}"
+    updated = False
+    result_lines = []
+
+    for line in lines:
+        if pattern.match(line):
+            if not updated:
+                result_lines.append(new_line)
+                updated = True
+            continue
+        result_lines.append(line)
+
+    if not updated:
+        result_lines.append(new_line)
+
+    content = "\n".join(result_lines).rstrip() + "\n"
+    tmp_path = env_path.with_name(f"{env_path.name}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(env_path)
+
+
+def _call_llm_api_internal(
+    messages: list, candidates_override: Optional[list] = None
+) -> Dict[str, str]:
+    """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
     try:
         if not llm_runtime.has_any_token():
             raise Exception("LLM токен не задан. Используй /settoken <token>.")
 
-        candidates = llm_runtime.get_candidate_settings()
+        request_id = uuid4().hex[:10]
+        candidates = candidates_override or llm_runtime.get_candidate_settings()
         primary = candidates[0]
 
         logger.info(f"🤖 Запрос к LLM: {primary.model}")
@@ -239,8 +602,16 @@ def call_llm_api(messages: list) -> str:
                 "messages": messages,
             }
             headers = build_headers(candidate.token)
+            safe_url = _sanitize_url_for_logs(candidate.url)
             logger.info(
-                f"   Candidate {candidate_idx}/{len(candidates)}: model={candidate.model}, url={candidate.url}"
+                f"   Candidate {candidate_idx}/{len(candidates)}: model={candidate.model}, url={safe_url}"
+            )
+            llm_traffic_logger.info(
+                "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
+                request_id,
+                candidate.model,
+                safe_url,
+                json.dumps(payload, ensure_ascii=False),
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
@@ -255,6 +626,14 @@ def call_llm_api(messages: list) -> str:
                     )
                 except requests.exceptions.RequestException as e:
                     last_error = e
+                    llm_traffic_logger.error(
+                        "LLM_HTTP_ERROR id=%s candidate=%s url=%s attempt=%s error=%s",
+                        request_id,
+                        candidate.model,
+                        safe_url,
+                        attempt,
+                        str(e),
+                    )
                     if isinstance(e, requests.exceptions.Timeout):
                         logger.error(
                             f"⏱️ Timeout от LLM (model={candidate.model}, timeout={config.LLM_REQUEST_TIMEOUT_SECONDS}s): {e}"
@@ -286,6 +665,15 @@ def call_llm_api(messages: list) -> str:
                 logger.info(
                     f"📥 HTTP Response: {response.status_code} "
                     f"(model={candidate.model}, attempt {attempt}/{max_attempts})"
+                )
+                llm_traffic_logger.info(
+                    "LLM_RESPONSE id=%s candidate=%s url=%s attempt=%s status=%s body=%s",
+                    request_id,
+                    candidate.model,
+                    safe_url,
+                    attempt,
+                    response.status_code,
+                    response.text,
                 )
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"  Response size: {len(response.text)} bytes")
@@ -366,15 +754,31 @@ def call_llm_api(messages: list) -> str:
                     continue
                 raise err
 
-            used_model = candidate.model
-            used_url = candidate.url
+            actual_model = result.get("model") if isinstance(result, dict) else None
+            used_model = (
+                str(actual_model).strip()
+                if isinstance(actual_model, str) and actual_model.strip()
+                else candidate.model
+            )
+            used_url = safe_url
             logger.info(
                 f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
+            )
+            llm_traffic_logger.info(
+                "LLM_RESULT id=%s model=%s url=%s content=%s",
+                request_id,
+                used_model,
+                used_url,
+                content,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 preview = content[:200] + "..." if len(content) > 200 else content
                 logger.debug(f"✅ Ответ от LLM: {preview}")
-            return content
+            return {
+                "content": content,
+                "model": used_model or "",
+                "url": used_url or "",
+            }
 
         if last_error:
             raise Exception(str(last_error))
@@ -394,6 +798,18 @@ def call_llm_api(messages: list) -> str:
     except Exception as e:
         logger.error(f"Неожиданная ошибка при вызове LLM: {e}", exc_info=True)
         raise
+
+
+def call_llm_api(messages: list) -> str:
+    """Вызов LLM API и возврат только текста ответа."""
+    return _call_llm_api_internal(messages)["content"]
+
+
+def call_llm_api_with_meta(
+    messages: list, candidates_override: Optional[list] = None
+) -> Dict[str, str]:
+    """Вызов LLM API и возврат текста вместе с моделью/URL."""
+    return _call_llm_api_internal(messages, candidates_override)
 
 
 async def init_telethon_client():
@@ -586,12 +1002,83 @@ def _schedule_job_id(schedule_id: str) -> str:
     return f"schedule:{schedule_id}"
 
 
+async def _notify_invalid_schedule_deleted(record: dict, reason: str) -> None:
+    if application_ref is None:
+        return
+    bot_client = getattr(application_ref, "bot", None)
+    if bot_client is None or not hasattr(bot_client, "send_message"):
+        logger.warning(
+            "Пропускаю уведомление об удалении битого расписания: bot API недоступен в application_ref"
+        )
+        return
+    details = json.dumps(record, ensure_ascii=False, indent=2)
+    text = (
+        "❌ Обнаружена и удалена поврежденная запись расписания.\n"
+        f"Причина: {reason}\n\n"
+        "Полная запись:\n"
+        f"{details}"
+    )
+    chat_id = record.get("chat_id")
+    if chat_id is None:
+        chat_id = config.ADMIN_USER_ID
+    try:
+        chat_id_int = int(chat_id)
+    except Exception:
+        logger.error(
+            f"Не удалось отправить уведомление об удалении битого расписания: некорректный chat_id={chat_id}"
+        )
+        return
+
+    for chunk in _split_text_chunks(text):
+        await bot_client.send_message(chat_id=chat_id_int, text=chunk)
+
+
+def _validate_schedule_record(record: dict) -> tuple[bool, str]:
+    if not isinstance(record, dict):
+        return False, "запись не является объектом"
+
+    if not (record.get("id") or "").strip():
+        return False, "отсутствует id"
+
+    recurrence_type = record.get("recurrence_type")
+    if recurrence_type not in {"daily", "weekly", "monthly", "interval_days"}:
+        return False, f"некорректный recurrence_type: {recurrence_type}"
+
+    time_value = record.get("time")
+    if not isinstance(time_value, str) or not re.match(r"^\d{1,2}:\d{2}$", time_value):
+        return False, "некорректное time (ожидается HH:MM)"
+    hour, minute = [int(part) for part in time_value.split(":", 1)]
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return False, "некорректное time (диапазон 00:00..23:59)"
+
+    if recurrence_type == "interval_days":
+        interval_days = record.get("interval_days")
+        if not isinstance(interval_days, int) or interval_days <= 0:
+            return False, "для interval_days нужен interval_days > 0"
+
+    try:
+        int(record.get("chat_id"))
+    except Exception:
+        return False, "некорректный chat_id"
+
+    if record.get("target_type") not in {"chat", "folder"}:
+        return False, "некорректный target_type"
+
+    if not (record.get("target_name") or "").strip():
+        return False, "отсутствует target_name"
+
+    return True, ""
+
+
 async def _load_schedule_records() -> list[dict]:
     async with schedules_lock:
         return load_schedules(SCHEDULES_FILE)
 
 
 async def _append_schedule_record(record: dict) -> None:
+    is_valid, reason = _validate_schedule_record(record)
+    if not is_valid:
+        raise ValueError(f"Некорректное расписание: {reason}")
     async with schedules_lock:
         records = load_schedules(SCHEDULES_FILE)
         records.append(record)
@@ -610,12 +1097,29 @@ async def _delete_schedule_record(schedule_id: str) -> bool:
 
 
 async def _get_schedule_record(schedule_id: str) -> Optional[dict]:
+    removed_invalid: Optional[tuple[dict, str]] = None
     async with schedules_lock:
         records = load_schedules(SCHEDULES_FILE)
         idx = _find_schedule_index(records, schedule_id)
         if idx < 0:
             return None
-        return records[idx].copy()
+        record = records[idx]
+        is_valid, reason = _validate_schedule_record(record)
+        if not is_valid:
+            logger.error(
+                f"❌ Расписание '{schedule_id}' повреждено и будет удалено: {reason}"
+            )
+            removed_invalid = (record.copy(), reason)
+            records.pop(idx)
+            save_schedules(SCHEDULES_FILE, records)
+            result = None
+        else:
+            result = record.copy()
+
+    if removed_invalid is not None:
+        removed_record, reason = removed_invalid
+        await _notify_invalid_schedule_deleted(removed_record, reason)
+    return result
 
 
 async def _mark_schedule_success(
@@ -634,24 +1138,53 @@ async def _mark_schedule_success(
 
 
 async def _load_and_refresh_schedule_records(now: datetime) -> list[dict]:
+    removed_invalid_records: list[tuple[dict, str]] = []
     async with schedules_lock:
         records = load_schedules(SCHEDULES_FILE)
         changed = False
+        valid_records = []
         for record in records:
-            if not record.get("next_run"):
-                record["next_run"] = compute_next_run(record, now).isoformat()
+            is_valid, reason = _validate_schedule_record(record)
+            if not is_valid:
+                logger.error(
+                    f"❌ Пропускаю некорректную запись расписания '{record}': {reason}"
+                )
+                removed_invalid_records.append((record.copy(), reason))
                 changed = True
                 continue
-            try:
-                parsed_next_run = _parse_iso_datetime(record["next_run"])
-            except Exception:
-                parsed_next_run = None
-            if parsed_next_run is None or parsed_next_run <= now:
-                record["next_run"] = compute_next_run(record, now).isoformat()
+            if not record.get("next_run"):
+                try:
+                    record["next_run"] = compute_next_run(record, now).isoformat()
+                except Exception as e:
+                    logger.error(
+                        f"❌ Не удалось рассчитать next_run для '{record.get('id')}': {e}"
+                    )
+                    changed = True
+                    continue
                 changed = True
+            else:
+                try:
+                    parsed_next_run = _parse_iso_datetime(record["next_run"])
+                except Exception:
+                    parsed_next_run = None
+                if parsed_next_run is None or parsed_next_run <= now:
+                    try:
+                        record["next_run"] = compute_next_run(record, now).isoformat()
+                    except Exception as e:
+                        logger.error(
+                            f"❌ Не удалось обновить next_run для '{record.get('id')}': {e}"
+                        )
+                        changed = True
+                        continue
+                    changed = True
+            valid_records.append(record)
         if changed:
-            save_schedules(SCHEDULES_FILE, records)
-        return [item.copy() for item in records]
+            save_schedules(SCHEDULES_FILE, valid_records)
+        result = [item.copy() for item in valid_records]
+
+    for removed_record, reason in removed_invalid_records:
+        await _notify_invalid_schedule_deleted(removed_record, reason)
+    return result
 
 
 async def _schedule_retry_after_failure(
@@ -1493,7 +2026,47 @@ async def process_chat_with_openai(
             },
         ]
 
-        answer = await asyncio.to_thread(call_llm_api, messages)
+        llm_result = await asyncio.to_thread(call_llm_api_with_meta, messages)
+        answer = llm_result.get("content", "")
+        used_model = llm_result.get("model", "")
+        used_url = llm_result.get("url", "")
+
+        score, issues = _analyze_summary_quality(answer, chat_history)
+        if score > 0:
+            logger.warning(
+                "⚠️ Подозрительное качество саммари от модели '%s': %s",
+                used_model or "<unknown>",
+                "; ".join(issues) or "неизвестные причины",
+            )
+            fallback = llm_runtime.get_fallback_settings()
+            fallback_url = _sanitize_url_for_logs(fallback.url)
+            can_retry_with_fallback = bool(fallback.token) and (
+                used_model != fallback.model or used_url != fallback_url
+            )
+            if can_retry_with_fallback:
+                logger.warning(
+                    "↪️ Повторяю суммаризацию на fallback-модели '%s' из-за низкого качества",
+                    fallback.model,
+                )
+                try:
+                    fallback_result = await asyncio.to_thread(
+                        call_llm_api_with_meta, messages, [fallback]
+                    )
+                    fallback_answer = fallback_result.get("content", "")
+                    fallback_score, fallback_issues = _analyze_summary_quality(
+                        fallback_answer, chat_history
+                    )
+                    if fallback_score <= score:
+                        answer = fallback_answer
+                        used_model = fallback_result.get("model", used_model)
+                        score = fallback_score
+                        issues = fallback_issues
+                except Exception as e:
+                    logger.warning(f"⚠️ Fallback-повтор не удался: {e}")
+
+        answer = _cleanup_summary_text(answer)
+        if used_model:
+            answer = f"{answer}\n\nМодель: `{used_model}`"
         return answer
 
     except Exception as e:
@@ -1522,6 +2095,52 @@ def split_markdown_chunks(text: str, max_length: int) -> list[str]:
         chunks.append(text[start:end])
         start = end
     return chunks
+
+
+def _render_markdownish_to_telegram_html(text: str) -> str:
+    """
+    Конвертирует markdown-like текст LLM в HTML, поддерживаемый Telegram.
+    """
+    raw = (text or "").replace("\r\n", "\n")
+    links: dict[str, tuple[str, str]] = {}
+
+    def _capture_link(match: re.Match) -> str:
+        token = f"TGLINKTOKEN{len(links)}ZZ"
+        links[token] = (match.group(1), match.group(2))
+        return token
+
+    raw = MARKDOWN_LINK_PATTERN.sub(_capture_link, raw)
+    escaped = html.escape(raw)
+    escaped = re.sub(
+        r"(?m)^\s{0,3}#{1,6}\s+(.+)$",
+        lambda m: f"<b>{m.group(1).strip()}</b>",
+        escaped,
+    )
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"__(.+?)__", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped)
+
+    for token, (label, url) in links.items():
+        escaped = escaped.replace(
+            token,
+            f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>',
+        )
+    return escaped
+
+
+def _html_to_plain_text(text: str) -> str:
+    plain = re.sub(r"</?[^>]+>", "", text or "")
+    return html.unescape(plain)
+
+
+async def _reply_text_html_or_plain(message_obj, text_html: str) -> None:
+    try:
+        await message_obj.reply_text(text_html, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Не удалось отправить HTML-разметку, отправляю plain text. Ошибка: {e}"
+        )
+        await message_obj.reply_text(_html_to_plain_text(text_html))
 
 
 @admin_only
@@ -1560,9 +2179,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/schedules - показать периодические задачи\n"
         "/delschedule <id> - удалить периодическую задачу\n\n"
         "/llmconfig - показать текущие LLM настройки\n"
-        "/seturl <url> - задать URL OpenAI-compatible API\n"
-        "/setmodel <model> - задать модель\n"
-        "/settoken <token> - задать API токен\n\n"
+        "/limits [primary|fallback] - показать лимиты API ключа\n"
+        "/seturl [primary|fallback] <url> - задать URL API\n"
+        "/setmodel [primary|fallback] <model> - задать модель\n"
+        "/settoken [primary|fallback] <token> - задать API токен\n\n"
+        "ℹ️ /seturl, /setmodel и /settoken сохраняют значения в .env\n\n"
         "**Примеры для чатов:**\n"
         "• Суммаризируй чат Работа за неделю\n"
         "• О чем говорили в личке с Иваном сегодня?\n"
@@ -1624,6 +2245,56 @@ def format_llm_settings_text() -> str:
     )
 
 
+def _parse_scope_and_value(
+    args: list[str], value_name: str
+) -> tuple[str, Optional[str], Optional[str]]:
+    """
+    Разбирает аргументы вида:
+    - <value> -> scope=primary
+    - primary <value>
+    - fallback <value>
+    """
+    if not args:
+        return "primary", None, f"Значение {value_name} не указано"
+
+    scope = "primary"
+    raw_args = list(args)
+    head = (raw_args[0] or "").strip().lower()
+    if head in {"primary", "fallback"}:
+        scope = head
+        raw_args = raw_args[1:]
+
+    value = " ".join(raw_args).strip()
+    if not value:
+        return scope, None, f"Значение {value_name} не указано"
+    return scope, value, None
+
+
+def _parse_scope_only(args: list[str]) -> tuple[str, Optional[str]]:
+    """Разбирает optional scope: [] -> primary, [primary|fallback] -> scope."""
+    if not args:
+        return "primary", None
+    if len(args) != 1:
+        return "", "Использование: /limits [primary|fallback]"
+
+    scope = (args[0] or "").strip().lower()
+    if scope not in {"primary", "fallback"}:
+        return "", "Использование: /limits [primary|fallback]"
+    return scope, None
+
+
+def _derive_limits_endpoint(url: str) -> str:
+    """Преобразует chat/completions endpoint в endpoint лимитов (.../key)."""
+    parsed = urlsplit(url)
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/chat/completions"):
+        path = path[: -len("/chat/completions")]
+    elif path.endswith("/completions"):
+        path = path[: -len("/completions")]
+    key_path = f"{path}/key" if path else "/key"
+    return urlunsplit((parsed.scheme, parsed.netloc, key_path, "", ""))
+
+
 @admin_only
 async def llmconfig_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать текущие настройки LLM."""
@@ -1634,60 +2305,178 @@ async def llmconfig_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def seturl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить URL LLM API."""
     if not context.args:
-        current_url = llm_runtime.get_settings().url
+        primary_url = llm_runtime.get_settings().url
+        fallback_url = llm_runtime.get_fallback_settings().url
         await update.message.reply_text(
-            f"Использование: /seturl <url>\nТекущий URL: {current_url}"
+            "Использование:\n"
+            "/seturl <url>  (primary)\n"
+            "/seturl primary <url>\n"
+            "/seturl fallback <url>\n\n"
+            f"Primary URL: {primary_url}\n"
+            f"Fallback URL: {fallback_url}"
         )
         return
 
-    raw_url = " ".join(context.args).strip()
+    scope, raw_url, error = _parse_scope_and_value(context.args, "url")
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+        return
+
     try:
-        normalized = llm_runtime.set_url(raw_url)
+        if scope == "fallback":
+            normalized = llm_runtime.set_fallback_url(raw_url)
+            _upsert_env_var("FALLBACK_LLM_URL", normalized)
+        else:
+            normalized = llm_runtime.set_url(raw_url)
+            _upsert_env_var("PRIMARY_LLM_URL", normalized)
     except ValueError as e:
         await update.message.reply_text(f"❌ {e}")
         return
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении URL в .env: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось сохранить URL в .env: {e}")
+        return
 
-    await update.message.reply_text(f"✅ URL обновлен:\n{normalized}")
+    await update.message.reply_text(f"✅ URL ({scope}) обновлен:\n{normalized}")
 
 
 @admin_only
 async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить модель для LLM API."""
     if not context.args:
-        current_model = llm_runtime.get_settings().model
+        primary_model = llm_runtime.get_settings().model
+        fallback_model = llm_runtime.get_fallback_settings().model
         await update.message.reply_text(
-            f"Использование: /setmodel <model>\nТекущая модель: {current_model}"
+            "Использование:\n"
+            "/setmodel primary <model>\n"
+            "/setmodel fallback <model>\n\n"
+            f"Primary модель: {primary_model}\n"
+            f"Fallback модель: {fallback_model}"
         )
         return
 
-    raw_model = " ".join(context.args).strip()
+    head = (context.args[0] or "").strip().lower()
+    if head not in {"primary", "fallback"}:
+        await update.message.reply_text(
+            "❌ Укажи scope модели: primary или fallback.\n"
+            "Пример: /setmodel primary meta-llama/llama-3.3-70b-instruct:free"
+        )
+        return
+    scope = head
+    raw_model = " ".join(context.args[1:]).strip()
+    if not raw_model:
+        await update.message.reply_text("❌ Значение model не указано")
+        return
     try:
-        model = llm_runtime.set_model(raw_model)
+        if scope == "fallback":
+            model = llm_runtime.set_fallback_model(raw_model)
+            _upsert_env_var("FALLBACK_LLM_MODEL", model)
+        else:
+            model = llm_runtime.set_model(raw_model)
+            _upsert_env_var("PRIMARY_LLM_MODEL", model)
     except ValueError as e:
         await update.message.reply_text(f"❌ {e}")
         return
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении модели в .env: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось сохранить модель в .env: {e}")
+        return
 
-    await update.message.reply_text(f"✅ Модель обновлена: {model}")
+    await update.message.reply_text(f"✅ Модель ({scope}) обновлена: {model}")
 
 
 @admin_only
 async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установить токен для LLM API."""
     if not context.args:
+        primary = llm_runtime.get_settings().masked_token()
+        fallback = llm_runtime.get_fallback_settings().masked_token()
         await update.message.reply_text(
-            "Использование: /settoken <token>\n"
-            f"Текущий токен: {llm_runtime.get_settings().masked_token()}"
+            "Использование:\n"
+            "/settoken <token>  (primary)\n"
+            "/settoken primary <token>\n"
+            "/settoken fallback <token>\n\n"
+            f"Primary токен: {primary}\n"
+            f"Fallback токен: {fallback}"
         )
         return
 
-    raw_token = " ".join(context.args).strip()
+    scope, raw_token, error = _parse_scope_and_value(context.args, "token")
+    if error:
+        await update.message.reply_text(f"❌ {error}")
+        return
+
     try:
-        masked = llm_runtime.set_token(raw_token)
+        if scope == "fallback":
+            masked = llm_runtime.set_fallback_token(raw_token)
+            _upsert_env_var("FALLBACK_LLM_TOKEN", raw_token)
+        else:
+            masked = llm_runtime.set_token(raw_token)
+            _upsert_env_var("PRIMARY_LLM_API_KEY", raw_token)
     except ValueError as e:
         await update.message.reply_text(f"❌ {e}")
         return
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении токена в .env: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось сохранить токен в .env: {e}")
+        return
 
-    await update.message.reply_text(f"✅ Токен обновлен: {masked}")
+    await update.message.reply_text(f"✅ Токен ({scope}) обновлен: {masked}")
+
+
+@admin_only
+async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает лимиты API-ключа для primary/fallback конфигурации."""
+    scope, error = _parse_scope_only(context.args)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    settings = (
+        llm_runtime.get_fallback_settings()
+        if scope == "fallback"
+        else llm_runtime.get_settings()
+    )
+    if not settings.token:
+        await update.message.reply_text(
+            f"❌ Токен для {scope} не задан. Используй /settoken {scope} <token>"
+        )
+        return
+
+    limits_url = _derive_limits_endpoint(settings.url)
+    safe_limits_url = _sanitize_url_for_logs(limits_url)
+    headers = {"Authorization": f"Bearer {settings.token}"}
+    try:
+        response = await asyncio.to_thread(
+            requests.get,
+            limits_url,
+            headers=headers,
+            timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.RequestException as e:
+        await update.message.reply_text(
+            f"❌ Не удалось получить лимиты ({scope}): {e}\nURL: {safe_limits_url}"
+        )
+        return
+
+    body = response.text
+    try:
+        parsed = response.json()
+        body = json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        body = (body or "").strip()
+
+    if response.status_code != 200:
+        short_body = body[:2000] if body else "(пустой ответ)"
+        await update.message.reply_text(
+            f"❌ Ошибка получения лимитов ({scope}): HTTP {response.status_code}\n"
+            f"URL: {safe_limits_url}\n\n{short_body}"
+        )
+        return
+
+    text = f"📊 Лимиты ({scope})\nURL: {safe_limits_url}\n\n{body}"
+    for chunk in _split_text_chunks(text):
+        await update.message.reply_text(chunk)
 
 
 @admin_only
@@ -1698,26 +2487,46 @@ async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🗓️ Расписаний пока нет.")
         return
 
+    def _format_iso(value: Optional[str], default: str) -> str:
+        if not value:
+            return default
+        try:
+            return _parse_iso_datetime(value).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return "некорректно"
+
     lines = ["🗓️ Активные расписания:\n"]
     for rec in records:
-        next_run = rec.get("next_run")
-        next_run_text = (
-            _parse_iso_datetime(next_run).strftime("%Y-%m-%d %H:%M")
-            if next_run
-            else "не задано"
-        )
+        next_run_text = _format_iso(rec.get("next_run"), "не задано")
+        last_run_text = _format_iso(rec.get("last_run"), "еще не запускалось")
+        created_at_text = _format_iso(rec.get("created_at"), "неизвестно")
         period_text = format_period_text(
             rec.get("period_type"), rec.get("period_value")
         )
+        mark_text = "да" if rec.get("mark_as_read") else "нет"
+        interval_days = rec.get("interval_days")
+        weekday = rec.get("weekday")
+        day_of_month = rec.get("day_of_month")
         lines.append(
             f"• ID: {rec.get('id')}\n"
+            f"  Chat ID: {rec.get('chat_id')}\n"
             f"  Цель: {rec.get('target_type')} '{rec.get('target_name')}'\n"
             f"  Период: {period_text}\n"
+            f"  Запрос: {_compact_query_for_display(rec.get('query'))}\n"
+            f"  Отмечать как прочитанные: {mark_text}\n"
             f"  Расписание: {recurrence_to_text(rec)}\n"
+            f"  recurrence_type: {rec.get('recurrence_type')}\n"
+            f"  time: {rec.get('time')}\n"
+            f"  interval_days: {interval_days if interval_days is not None else '-'}\n"
+            f"  weekday: {weekday if weekday is not None else '-'}\n"
+            f"  day_of_month: {day_of_month if day_of_month is not None else '-'}\n"
+            f"  Создано: {created_at_text}\n"
+            f"  Последний запуск: {last_run_text}\n"
             f"  Следующий запуск: {next_run_text}\n"
         )
 
-    await update.message.reply_text("\n".join(lines))
+    for chunk in _split_text_chunks("\n".join(lines)):
+        await update.message.reply_text(chunk)
 
 
 @admin_only
@@ -1986,37 +2795,29 @@ async def _process_single_chat(
     # Генерируем ссылку на чат (ведет на первое суммаризированное сообщение)
     chat_link = generate_channel_link(chat_entity, message_id=first_message_id)
 
-    # Формируем и отправляем результат
-    use_markdown = (
-        total > 1 or chat_link is not None
-    )  # Используем Markdown, если есть ссылка
-    if use_markdown:
-        safe_chat_name = escape_markdown(chat_name)
-        if chat_link:
-            result_prefix = (
-                f"💬 **[{safe_chat_name}]({chat_link})** ({period_text}):\n\n"
-            )
-        else:
-            result_prefix = f"💬 **{safe_chat_name}** ({period_text}):\n\n"
+    # Формируем и отправляем результат (Telegram HTML + fallback в plain text).
+    safe_chat_name = html.escape(chat_name)
+    safe_period_text = html.escape(period_text)
+    if chat_link:
+        safe_chat_link = html.escape(chat_link, quote=True)
+        result_prefix = (
+            f'💬 <b><a href="{safe_chat_link}">{safe_chat_name}</a></b>'
+            f" ({safe_period_text}):\n\n"
+        )
     else:
-        result_prefix = f"💬 Чат '{chat_name}' ({period_text}):\n\n"
+        result_prefix = f"💬 <b>{safe_chat_name}</b> ({safe_period_text}):\n\n"
 
-    # Telegram имеет ограничение на длину сообщения
     max_length = 4096
-    safe_result = escape_markdown(result) if use_markdown else result
-    full_message = result_prefix + safe_result
+    html_result = _render_markdownish_to_telegram_html(result)
+    full_message = result_prefix + html_result
 
     if len(full_message) <= max_length:
-        await update.message.reply_text(
-            full_message, parse_mode="Markdown" if use_markdown else None
-        )
+        await _reply_text_html_or_plain(update.message, full_message)
     else:
-        await update.message.reply_text(
-            result_prefix, parse_mode="Markdown" if use_markdown else None
-        )
-        for chunk in split_markdown_chunks(safe_result, max_length):
-            await update.message.reply_text(
-                chunk, parse_mode="Markdown" if use_markdown else None
+        await _reply_text_html_or_plain(update.message, result_prefix)
+        for chunk in _split_text_chunks(result, 3500):
+            await _reply_text_html_or_plain(
+                update.message, _render_markdownish_to_telegram_html(chunk)
             )
 
     # Если нужно отметить прочитанным
@@ -2034,6 +2835,7 @@ async def _process_single_chat(
 async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений от пользователя"""
     user_message = update.message.text
+    schedule_intent = _looks_like_schedule_request(user_message)
     processing_msg = await update.message.reply_text("Обрабатываю твою команду... ⏳")
 
     try:
@@ -2051,6 +2853,13 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if command.get("error"):
             error_text = command.get("error")
+            if schedule_intent:
+                await processing_msg.edit_text(
+                    "❌ Не удалось понять расписание суммаризации.\n"
+                    "Пожалуйста, переформулируй запрос, например:\n"
+                    '"Суммаризируй папку AI каждый день в 20:00".'
+                )
+                return
             if (
                 "Превышен лимит запросов" in error_text
                 or "Too Many Requests" in error_text
@@ -2081,6 +2890,27 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         interval_days = command.get("interval_days")
         schedule_time = command.get("time")
         schedule_time_missing = command.get("time_missing", False)
+
+        target_type, period_type, period_value, mark_as_read = (
+            _apply_parser_intent_guards(
+                user_message=user_message,
+                target_type=target_type,
+                period_type=period_type,
+                period_value=period_value,
+                mark_as_read=mark_as_read,
+            )
+        )
+
+        recurrence_type, interval_days, schedule_time, schedule_time_missing = (
+            _apply_schedule_intent_guard(
+                schedule_intent=schedule_intent,
+                recurrence_type=recurrence_type,
+                interval_days=interval_days,
+                schedule_time=schedule_time,
+                schedule_time_missing=schedule_time_missing,
+                user_message=user_message,
+            )
+        )
 
         # Если цель не указана, используем из контекста
         if not target_name:
@@ -2114,6 +2944,14 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info("📖 Будут отмечены сообщения как прочитанные после обработки")
 
         # Шаг 3: При наличии периодичности создаем расписание вместо немедленного запуска
+        if schedule_intent and recurrence_type is None:
+            await processing_msg.edit_text(
+                "❌ Не удалось понять, как часто запускать суммаризацию.\n"
+                "Пожалуйста, укажи расписание явно, например:\n"
+                '"каждый день в 20:00", "каждую неделю в 09:00", "раз в 3 дня в 19:30".'
+            )
+            return
+
         if recurrence_type:
             if schedule_time_missing:
                 await processing_msg.edit_text(
@@ -2130,19 +2968,26 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 "weekday": now.weekday() if recurrence_type == "weekly" else None,
                 "day_of_month": now.day if recurrence_type == "monthly" else None,
             }
-            schedule_record = build_schedule_record(
-                target_type=target_type,
-                target_name=target_name,
-                period_type=period_type,
-                period_value=period_value,
-                query=query,
-                mark_as_read=mark_as_read,
-                chat_id=update.effective_chat.id,
-                schedule_spec=schedule_spec,
-                now_local=now,
-            )
-
-            await _append_schedule_record(schedule_record)
+            try:
+                schedule_record = build_schedule_record(
+                    target_type=target_type,
+                    target_name=target_name,
+                    period_type=period_type,
+                    period_value=period_value,
+                    query=query,
+                    mark_as_read=mark_as_read,
+                    chat_id=update.effective_chat.id,
+                    schedule_spec=schedule_spec,
+                    now_local=now,
+                )
+                await _append_schedule_record(schedule_record)
+            except Exception:
+                await processing_msg.edit_text(
+                    "❌ Не удалось понять расписание суммаризации.\n"
+                    "Пожалуйста, переформулируй запрос, например:\n"
+                    '"Суммаризируй папку AI каждый день в 20:00".'
+                )
+                return
             _schedule_next_job(schedule_record)
 
             next_run_text = _parse_iso_datetime(schedule_record["next_run"]).strftime(
@@ -2274,6 +3119,7 @@ async def main():
     application.add_handler(CommandHandler("context", context_command))
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("llmconfig", llmconfig_command))
+    application.add_handler(CommandHandler("limits", limits_command))
     application.add_handler(CommandHandler("seturl", seturl_command))
     application.add_handler(CommandHandler("setmodel", setmodel_command))
     application.add_handler(CommandHandler("settoken", settoken_command))

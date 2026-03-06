@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import bot
+from schedule_runtime import save_schedules
 
 
 def test_escape_markdown():
@@ -185,6 +186,150 @@ def test_split_markdown_chunks_keeps_escape_integrity():
         assert not chunk.endswith("\\")
 
 
+def test_render_markdownish_to_telegram_html_converts_common_patterns():
+    src = "## Заголовок\n**жирный** и `код`\n[Ссылка](https://example.com)"
+    out = bot._render_markdownish_to_telegram_html(src)
+    assert "<b>Заголовок</b>" in out
+    assert "<b>жирный</b>" in out
+    assert "<code>код</code>" in out
+    assert '<a href="https://example.com">Ссылка</a>' in out
+
+
+def test_sanitize_url_for_logs_hides_query_and_credentials():
+    masked = bot._sanitize_url_for_logs(
+        "https://user:pass@example.com/v1/chat/completions?api_key=secret&x=1"
+    )
+    assert "secret" not in masked
+    assert "user:pass" not in masked
+    assert "?" not in masked
+    assert masked.startswith("https://example.com/")
+
+
+def test_analyze_summary_quality_detects_artifacts_and_dates():
+    history = "[2026-03-06 10:00:00] User: пример"
+    bad_summary = (
+        'Сводка: пункт,.attr(loading="lazy") и символы в录入 тексте. '
+        "Дата: 14 марта 2026."
+    )
+    score, issues = bot._analyze_summary_quality(bad_summary, history)
+    assert score > 0
+    assert issues
+
+
+def test_cleanup_summary_text_removes_attr_artifacts():
+    src = 'Текст,.attr(loading="lazy")\n\n\nЕщё строка'
+    cleaned = bot._cleanup_summary_text(src)
+    assert ".attr(" not in cleaned
+    assert "\n\n\n" not in cleaned
+
+
+def test_compact_query_for_display():
+    assert bot._compact_query_for_display(None) == "(пусто)"
+    assert bot._compact_query_for_display("  a   b   c  ", max_length=20) == "a b c"
+    assert bot._compact_query_for_display("x" * 30, max_length=10) == "xxxxxxx..."
+
+
+def test_looks_like_schedule_request_variants():
+    assert bot._looks_like_schedule_request("суммаризируй каждый день в 20:00")
+    assert bot._looks_like_schedule_request("раз в 3 дня в 19:30")
+    assert bot._looks_like_schedule_request("weekly summary at 10:00")
+    assert not bot._looks_like_schedule_request("суммаризируй чат работа")
+
+
+def test_apply_schedule_intent_guard_ignores_hallucinated_schedule():
+    recurrence_type, interval_days, schedule_time, schedule_time_missing = (
+        bot._apply_schedule_intent_guard(
+            schedule_intent=False,
+            recurrence_type="daily",
+            interval_days=None,
+            schedule_time="10:00",
+            schedule_time_missing=False,
+            user_message="суммаризируй папку AI за вчера",
+        )
+    )
+    assert recurrence_type is None
+    assert interval_days is None
+    assert schedule_time is None
+    assert schedule_time_missing is False
+
+
+def test_apply_schedule_intent_guard_keeps_explicit_schedule():
+    recurrence_type, interval_days, schedule_time, schedule_time_missing = (
+        bot._apply_schedule_intent_guard(
+            schedule_intent=True,
+            recurrence_type="interval_days",
+            interval_days=3,
+            schedule_time="19:30",
+            schedule_time_missing=False,
+            user_message="суммаризируй папку AI раз в 3 дня в 19:30",
+        )
+    )
+    assert recurrence_type == "interval_days"
+    assert interval_days == 3
+    assert schedule_time == "19:30"
+    assert schedule_time_missing is False
+
+
+def test_apply_parser_intent_guards_fixes_hallucinated_unread_and_mark():
+    target_type, period_type, period_value, mark_as_read = (
+        bot._apply_parser_intent_guards(
+            user_message="суммаризируй все чаты в папке AI за вчера",
+            target_type="chat",
+            period_type="unread",
+            period_value=None,
+            mark_as_read=True,
+        )
+    )
+
+    assert target_type == "folder"
+    assert period_type == "days"
+    assert period_value == 1
+    assert mark_as_read is False
+
+
+def test_apply_parser_intent_guards_keeps_explicit_unread_and_mark():
+    target_type, period_type, period_value, mark_as_read = (
+        bot._apply_parser_intent_guards(
+            user_message=(
+                "суммаризируй непрочитанные сообщения в папке AI и отметь как прочитанные"
+            ),
+            target_type="folder",
+            period_type="unread",
+            period_value=None,
+            mark_as_read=True,
+        )
+    )
+
+    assert target_type == "folder"
+    assert period_type == "unread"
+    assert period_value is None
+    assert mark_as_read is True
+
+
+def test_has_mark_as_read_intent_with_intermediate_words():
+    assert bot._has_mark_as_read_intent("отметь их как прочитанные")
+    assert bot._has_mark_as_read_intent("пометь сообщения прочитанными")
+    assert bot._has_mark_as_read_intent("mark them as read")
+    assert not bot._has_mark_as_read_intent("суммаризируй чат")
+
+
+def test_apply_parser_intent_guards_corrects_explicit_yesterday_from_today():
+    target_type, period_type, period_value, mark_as_read = (
+        bot._apply_parser_intent_guards(
+            user_message="суммаризируй все чаты в папке AI за вчера",
+            target_type="folder",
+            period_type="today",
+            period_value=None,
+            mark_as_read=False,
+        )
+    )
+
+    assert target_type == "folder"
+    assert period_type == "days"
+    assert period_value == 1
+    assert mark_as_read is False
+
+
 def test_init_scheduler_recomputes_stale_next_run(monkeypatch):
     now = datetime.now().astimezone()
     stale = (now - timedelta(days=1)).isoformat()
@@ -234,6 +379,57 @@ def test_init_scheduler_recomputes_stale_next_run(monkeypatch):
     assert bot._parse_iso_datetime(rewritten) > now
 
     asyncio.run(bot.shutdown_scheduler())
+
+
+def test_load_and_refresh_schedule_records_skips_invalid(tmp_path, monkeypatch):
+    now = datetime.now().astimezone()
+    schedules_file = tmp_path / "schedules.db"
+    save_schedules(
+        schedules_file,
+        [
+            {
+                "id": "ok1",
+                "chat_id": 10,
+                "target_type": "chat",
+                "target_name": "Work",
+                "period_type": "today",
+                "period_value": None,
+                "query": "q",
+                "mark_as_read": False,
+                "recurrence_type": "daily",
+                "time": "20:00",
+                "next_run": "",
+                "last_run": None,
+                "created_at": now.isoformat(),
+                "interval_days": None,
+                "weekday": None,
+                "day_of_month": None,
+            },
+            {
+                "id": "bad1",
+                "chat_id": 10,
+                "target_type": "chat",
+                "target_name": "Work",
+                "period_type": None,
+                "period_value": None,
+                "query": "q",
+                "mark_as_read": False,
+                "recurrence_type": "daily",
+                "time": "99:99",
+                "next_run": "",
+                "last_run": None,
+                "created_at": now.isoformat(),
+                "interval_days": None,
+                "weekday": None,
+                "day_of_month": None,
+            },
+        ],
+    )
+    monkeypatch.setattr(bot, "SCHEDULES_FILE", schedules_file)
+
+    records = asyncio.run(bot._load_and_refresh_schedule_records(now))
+    assert len(records) == 1
+    assert records[0]["id"] == "ok1"
 
 
 def test_dialog_filter_helpers(monkeypatch):

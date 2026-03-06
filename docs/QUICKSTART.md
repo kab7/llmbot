@@ -127,9 +127,14 @@ chmod 600 .env
 /context           # Показать текущий контекст
 /reset             # Сбросить контекст
 /llmconfig         # Показать текущие LLM настройки
-/seturl <url>      # Поменять endpoint LLM API
-/setmodel <model>  # Поменять модель
-/settoken <token>  # Поменять токен
+/limits primary    # Показать лимиты primary ключа
+/limits fallback   # Показать лимиты fallback ключа
+/seturl primary <url>        # Поменять primary endpoint
+/seturl fallback <url>       # Поменять fallback endpoint
+/setmodel primary <model>    # Поменять primary модель
+/setmodel fallback <model>   # Поменять fallback модель
+/settoken primary <token>    # Поменять primary токен
+/settoken fallback <token>   # Поменять fallback токен
 ```
 
 ## Команды бота
@@ -139,9 +144,10 @@ chmod 600 .env
 - `/context` - показать текущий контекст (последний чат и период)
 - `/reset` - сбросить контекст
 - `/llmconfig` - показать текущие LLM настройки
-- `/seturl <url>` - задать URL OpenAI-compatible API
-- `/setmodel <model>` - задать модель
-- `/settoken <token>` - задать токен
+- `/limits [primary|fallback]` - показать лимиты API ключа
+- `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible API
+- `/setmodel [primary|fallback] <model>` - задать модель
+- `/settoken [primary|fallback] <token>` - задать токен
 
 **LLM runtime:**
 - URL, токен и модель задаются в `config.py` по умолчанию
