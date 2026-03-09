@@ -362,7 +362,7 @@ def test_parse_command_with_gpt_schedule_fields(monkeypatch):
 def test_process_chat_with_openai(monkeypatch):
     captured = {}
 
-    def fake_call(messages, candidates_override=None):
+    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
         captured["messages"] = messages
         captured["override"] = candidates_override
         return {
@@ -382,7 +382,7 @@ def test_process_chat_with_openai(monkeypatch):
     assert "[PII]" not in payload
     assert captured["override"] is None
 
-    def raise_error(messages, candidates_override=None):
+    def raise_error(messages, candidates_override=None, rate_limit_callback=None):
         raise Exception("boom")
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", raise_error)
@@ -406,7 +406,7 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
         ),
     )
 
-    def fake_call(messages, candidates_override=None):
+    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
         calls.append(candidates_override)
         if candidates_override:
             return {
@@ -435,6 +435,39 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     assert calls[1][0].model == "fallback/model"
     assert "Нормальная краткая суммаризация" in result
     assert "Модель: `fallback/model`" in result
+
+
+def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
+    notifications = []
+
+    async def notifier(message_text: str):
+        notifications.append(message_text)
+
+    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
+        candidate = SimpleNamespace(model="meta-llama/llama-3.3-70b-instruct:free")
+        assert rate_limit_callback is not None
+        rate_limit_callback(candidate, 12, "temporarily rate-limited upstream")
+        return {
+            "content": "summary",
+            "model": "meta-llama/llama-3.3-70b-instruct:free",
+            "url": "https://openrouter.ai/api/v1/chat/completions",
+        }
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+
+    result = asyncio.run(
+        bot.process_chat_with_openai(
+            "chat history",
+            "суммаризируй",
+            "непрочитанные сообщения",
+            rate_limit_notifier=notifier,
+        )
+    )
+
+    assert "summary" in result
+    assert notifications
+    assert "429" in notifications[0]
+    assert "12с" in notifications[0]
 
 
 def test_get_chat_history_empty_returns_empty_string(monkeypatch):
@@ -549,7 +582,9 @@ def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
         calls["period_value"] = period_value
         return "history", 101
 
-    async def fake_process(chat_history, query, period_text):
+    async def fake_process(
+        chat_history, query, period_text, rate_limit_notifier=None
+    ):
         calls["period_text"] = period_text
         return "summary"
 
@@ -614,7 +649,9 @@ def test_process_single_chat_unread_mode_uses_unread_history(monkeypatch):
             return "[2026-03-09 10:00:00] User: fresh unread", 101
         return "[2023-09-22 10:00:00] User: stale old", 1
 
-    async def fake_process(chat_history, query, period_text):
+    async def fake_process(
+        chat_history, query, period_text, rate_limit_notifier=None
+    ):
         calls["history"] = chat_history
         return "summary"
 

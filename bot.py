@@ -602,7 +602,9 @@ def _upsert_env_var(key: str, value: str) -> None:
 
 
 def _call_llm_api_internal(
-    messages: list, candidates_override: Optional[list] = None
+    messages: list,
+    candidates_override: Optional[list] = None,
+    rate_limit_callback: Optional[Any] = None,
 ) -> Dict[str, str]:
     """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
     try:
@@ -753,6 +755,14 @@ def _call_llm_api_internal(
                     if wait_seconds <= 0:
                         wait_seconds = 2 ** (attempt - 1)
                     details = extract_error_details(response)
+                    if rate_limit_callback is not None:
+                        try:
+                            rate_limit_callback(candidate, wait_seconds, details)
+                        except Exception as callback_error:
+                            logger.warning(
+                                "⚠️ Не удалось вызвать rate-limit callback: %s",
+                                callback_error,
+                            )
                     logger.warning(
                         f"⏳ LLM rate limit (429), retry через {wait_seconds}s: {details}"
                     )
@@ -878,10 +888,12 @@ def call_llm_api(messages: list) -> str:
 
 
 def call_llm_api_with_meta(
-    messages: list, candidates_override: Optional[list] = None
+    messages: list,
+    candidates_override: Optional[list] = None,
+    rate_limit_callback: Optional[Any] = None,
 ) -> Dict[str, str]:
     """Вызов LLM API и возврат текста вместе с моделью/URL."""
-    return _call_llm_api_internal(messages, candidates_override)
+    return _call_llm_api_internal(messages, candidates_override, rate_limit_callback)
 
 
 async def init_telethon_client():
@@ -2110,7 +2122,10 @@ async def get_chat_history(
 
 
 async def process_chat_with_openai(
-    chat_history: str, query: str, period_context: str = None
+    chat_history: str,
+    query: str,
+    period_context: str = None,
+    rate_limit_notifier: Optional[Any] = None,
 ) -> str:
     """
     Обрабатывает историю чата согласно запросу пользователя
@@ -2137,7 +2152,27 @@ async def process_chat_with_openai(
             },
         ]
 
-        llm_result = await asyncio.to_thread(call_llm_api_with_meta, messages)
+        loop = asyncio.get_running_loop()
+
+        def sync_rate_limit_notifier(candidate, wait_seconds: int, details: str) -> None:
+            if rate_limit_notifier is None:
+                return
+            details_preview = (details or "").strip()
+            if len(details_preview) > 160:
+                details_preview = f"{details_preview[:157]}..."
+            notice = (
+                f"⏳ Модель `{candidate.model}` временно ограничена (429).\n"
+                f"Жду {wait_seconds}с и повторяю запрос."
+            )
+            if details_preview:
+                notice += f"\nПричина: {details_preview}"
+            loop.call_soon_threadsafe(
+                asyncio.create_task, rate_limit_notifier(notice)
+            )
+
+        llm_result = await asyncio.to_thread(
+            call_llm_api_with_meta, messages, None, sync_rate_limit_notifier
+        )
         answer = llm_result.get("content", "")
         used_model = llm_result.get("model", "")
         used_url = llm_result.get("url", "")
@@ -2161,7 +2196,10 @@ async def process_chat_with_openai(
                 )
                 try:
                     fallback_result = await asyncio.to_thread(
-                        call_llm_api_with_meta, messages, [fallback]
+                        call_llm_api_with_meta,
+                        messages,
+                        [fallback],
+                        sync_rate_limit_notifier,
                     )
                     fallback_answer = fallback_result.get("content", "")
                     fallback_score, fallback_issues = _analyze_summary_quality(
@@ -2915,7 +2953,18 @@ async def _process_single_chat(
     else:
         await processing_msg.edit_text("Анализирую переписку с помощью AI... 💭")
 
-    result = await process_chat_with_openai(chat_history, query, period_text)
+    async def notify_rate_limit(message_text: str) -> None:
+        if isinstance(processing_msg, _SilentProcessingMessage):
+            await update.message.reply_text(message_text)
+        else:
+            await processing_msg.edit_text(message_text)
+
+    result = await process_chat_with_openai(
+        chat_history,
+        query,
+        period_text,
+        rate_limit_notifier=notify_rate_limit,
+    )
 
     # Генерируем ссылку на чат (ведет на первое суммаризированное сообщение)
     chat_link = generate_channel_link(chat_entity, message_id=first_message_id)
