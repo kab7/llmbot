@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 import json
 import requests
 import time
+import threading
 from logging.handlers import RotatingFileHandler
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -44,6 +45,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+_free_model_rate_limit_lock = threading.Lock()
+_free_model_next_allowed_at: dict[str, float] = {}
 
 
 def _setup_file_logging() -> None:
@@ -405,6 +408,72 @@ def _sanitize_url_for_logs(url: str) -> str:
         return "<invalid-url>"
 
 
+def _is_free_model_name(model: str) -> bool:
+    return (model or "").strip().lower().endswith("free")
+
+
+def _is_fallback_candidate(candidate) -> bool:
+    fallback = llm_runtime.get_fallback_settings()
+    return (
+        candidate.url == fallback.url
+        and candidate.model == fallback.model
+        and candidate.token == fallback.token
+    )
+
+
+def _get_free_model_timing(candidate) -> tuple[int, int]:
+    if not _is_free_model_name(candidate.model):
+        return 0, 0
+    if _is_fallback_candidate(candidate):
+        return (
+            config.FALLBACK_FREE_MODEL_INTERVAL_SECONDS,
+            config.FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS,
+        )
+    return (
+        config.PRIMARY_FREE_MODEL_INTERVAL_SECONDS,
+        config.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS,
+    )
+
+
+def _free_model_rate_limit_key(candidate) -> str:
+    return f"{candidate.url}|{candidate.model}"
+
+
+def _wait_for_free_model_slot(candidate) -> None:
+    interval_seconds, _ = _get_free_model_timing(candidate)
+    if interval_seconds <= 0:
+        return
+
+    key = _free_model_rate_limit_key(candidate)
+    now = time.monotonic()
+    with _free_model_rate_limit_lock:
+        next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
+        reserved_at = max(next_allowed_at, now)
+        _free_model_next_allowed_at[key] = reserved_at + interval_seconds
+
+    wait_seconds = max(0.0, reserved_at - now)
+    if wait_seconds > 0:
+        logger.info(
+            "⏱️ Жду %.1fs перед запросом к free-модели '%s'",
+            wait_seconds,
+            candidate.model,
+        )
+        time.sleep(wait_seconds)
+
+
+def _apply_free_model_429_backoff(candidate) -> int:
+    _, backoff_seconds = _get_free_model_timing(candidate)
+    if backoff_seconds <= 0:
+        return 0
+
+    key = _free_model_rate_limit_key(candidate)
+    now = time.monotonic()
+    with _free_model_rate_limit_lock:
+        next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
+        _free_model_next_allowed_at[key] = max(next_allowed_at, now + backoff_seconds)
+    return backoff_seconds
+
+
 def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
     allowed: set[str] = set()
     for raw_date in re.findall(r"\b(20\d{2})-(\d{2})-(\d{2})\b", chat_history or ""):
@@ -617,6 +686,7 @@ def _call_llm_api_internal(
                 logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
 
             for attempt in range(1, max_attempts + 1):
+                _wait_for_free_model_slot(candidate)
                 try:
                     response = requests.post(
                         candidate.url,
@@ -679,7 +749,9 @@ def _call_llm_api_internal(
                     logger.debug(f"  Response size: {len(response.text)} bytes")
 
                 if response.status_code == 429 and attempt < max_attempts:
-                    wait_seconds = 2 ** (attempt - 1)
+                    wait_seconds = _apply_free_model_429_backoff(candidate)
+                    if wait_seconds <= 0:
+                        wait_seconds = 2 ** (attempt - 1)
                     details = extract_error_details(response)
                     logger.warning(
                         f"⏳ LLM rate limit (429), retry через {wait_seconds}s: {details}"
@@ -1263,11 +1335,15 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
     total = len(chats_to_process)
 
     for idx, chat_data in enumerate(chats_to_process, 1):
-        if len(chat_data) == 3:
+        if len(chat_data) == 4:
+            chat_entity, chat_name, unread_count, read_inbox_max_id = chat_data
+        elif len(chat_data) == 3:
             chat_entity, chat_name, unread_count = chat_data
+            read_inbox_max_id = None
         else:
             chat_entity, chat_name = chat_data
             unread_count = None
+            read_inbox_max_id = None
         try:
             success = await _process_single_chat(
                 update_proxy,
@@ -1281,6 +1357,7 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
                 query,
                 mark_as_read,
                 unread_count,
+                read_inbox_max_id,
             )
             if success:
                 processed_count += 1
@@ -1847,7 +1924,8 @@ async def get_chats_in_folder(dialog_filter: Any) -> list:
             # Проверяем, входит ли этот чат в папку (explicit + dynamic rules)
             if _dialog_in_filter(dialog, dialog_filter, compiled_filter):
                 logger.debug(f"  ✅ Чат '{title}' (ID: {entity.id}) в папке")
-                chats.append((entity, title, getattr(dialog, "unread_count", 0) or 0))
+                unread_count, read_inbox_max_id = _get_dialog_unread_state(dialog)
+                chats.append((entity, title, unread_count, read_inbox_max_id))
 
         logger.info(f"📊 Проверено диалогов: {checked_count}")
         logger.info(f"✅ Найдено чатов в папке '{folder_title}': {len(chats)}")
@@ -1888,8 +1966,21 @@ async def mark_chat_as_read(chat_entity) -> bool:
         return False
 
 
+def _get_dialog_unread_state(dialog) -> tuple[int, Optional[int]]:
+    """Извлекает unread_count и границу уже прочитанного inbox для диалога."""
+    unread_count = int(getattr(dialog, "unread_count", 0) or 0)
+    raw_dialog = getattr(dialog, "dialog", None)
+    read_inbox_max_id = getattr(raw_dialog, "read_inbox_max_id", None)
+    if read_inbox_max_id is not None:
+        try:
+            read_inbox_max_id = int(read_inbox_max_id)
+        except (TypeError, ValueError):
+            read_inbox_max_id = None
+    return unread_count, read_inbox_max_id
+
+
 async def get_chat_history(
-    chat_entity, period_type: str = None, period_value: int = None
+    chat_entity, period_type: str = None, period_value: Any = None
 ) -> tuple[str, Optional[int]]:
     """
     Получает историю сообщений из чата за указанный период
@@ -1916,6 +2007,7 @@ async def get_chat_history(
         messages = []
         offset_date = None
         limit = None
+        min_id = None
 
         # Определяем параметры загрузки в зависимости от типа периода
         # Telethon работает с UTC, поэтому все offset_date должны быть в UTC
@@ -1951,13 +2043,25 @@ async def get_chat_history(
             # Последние N сообщений
             limit = period_value
 
+        elif period_type == "unread":
+            unread_limit = None
+            if isinstance(period_value, dict):
+                unread_limit = period_value.get("limit")
+                min_id = period_value.get("read_inbox_max_id")
+            elif period_value:
+                unread_limit = period_value
+            limit = unread_limit or config.DEFAULT_MESSAGES_LIMIT
+            if min_id is not None:
+                logger.info(f"📬 Загружаю только непрочитанные сообщения после ID {min_id}")
+
         else:
             # По умолчанию - последние N сообщений (настраивается в config)
             limit = config.DEFAULT_MESSAGES_LIMIT
 
         # Загружаем сообщения
         # Формируем параметры для iter_messages (не передаем None значения)
-        iter_params = {"reverse": True}
+        newest_first = offset_date is None and limit is not None
+        iter_params = {"reverse": not newest_first}
         if offset_date is not None:
             iter_params["offset_date"] = offset_date
             logger.debug(f"  offset_date (UTC): {offset_date}")
@@ -1965,13 +2069,12 @@ async def get_chat_history(
         if limit is not None:
             iter_params["limit"] = limit
             logger.debug(f"  limit: {limit}")
-        first_message_id = None
+        if min_id is not None:
+            iter_params["min_id"] = min_id
+            logger.debug(f"  min_id: {min_id}")
+        collected_messages: list[tuple[int, str]] = []
         async for message in telethon_client.iter_messages(chat_entity, **iter_params):
             if message.text:
-                # Запоминаем ID первого сообщения в выборке
-                if first_message_id is None:
-                    first_message_id = message.id
-
                 sender_name = (
                     get_chat_display_name(message.sender)
                     if message.sender
@@ -1981,11 +2084,19 @@ async def get_chat_history(
                 # Конвертируем UTC время в локальное
                 local_time = utc_to_local(message.date)
                 timestamp = local_time.strftime("%Y-%m-%d %H:%M:%S")
-                messages.append(f"[{timestamp}] {sender_name}: {message.text}")
+                collected_messages.append(
+                    (message.id, f"[{timestamp}] {sender_name}: {message.text}")
+                )
 
-        if not messages:
+        if not collected_messages:
             logger.warning("⚠️ Сообщения за указанный период не найдены")
             return "", None
+
+        if newest_first:
+            collected_messages.reverse()
+
+        first_message_id = collected_messages[0][0]
+        messages = [formatted for _, formatted in collected_messages]
 
         logger.info(
             f"✅ Загружено сообщений: {len(messages)} (временные метки в локальном часовом поясе)"
@@ -2676,17 +2787,17 @@ async def _resolve_folder_chats(
     return chats, folder_title, None
 
 
-async def _get_unread_count_for_chat(chat_entity) -> Optional[int]:
-    """Возвращает unread_count для конкретного чата из списка диалогов."""
+async def _get_unread_state_for_chat(chat_entity) -> tuple[Optional[int], Optional[int]]:
+    """Возвращает unread_count и read_inbox_max_id для конкретного чата."""
     try:
         await ensure_telethon_connected()
         chat_id = getattr(chat_entity, "id", None)
         async for dialog in telethon_client.iter_dialogs():
             if getattr(dialog.entity, "id", None) == chat_id:
-                return int(getattr(dialog, "unread_count", 0) or 0)
+                return _get_dialog_unread_state(dialog)
     except Exception as e:
-        logger.warning(f"⚠️ Не удалось получить unread_count для чата: {e}")
-    return None
+        logger.warning(f"⚠️ Не удалось получить unread metadata для чата: {e}")
+    return None, None
 
 
 async def _resolve_single_chat(
@@ -2723,8 +2834,8 @@ async def _resolve_single_chat(
             f"✅ Чат найден: '{found_name}'\n\nЗагружаю историю... 📥"
         )
 
-    unread_count = await _get_unread_count_for_chat(chat_entity)
-    return [(chat_entity, found_name, unread_count)], found_name, None
+    unread_count, read_inbox_max_id = await _get_unread_state_for_chat(chat_entity)
+    return [(chat_entity, found_name, unread_count, read_inbox_max_id)], found_name, None
 
 
 async def _process_single_chat(
@@ -2739,6 +2850,7 @@ async def _process_single_chat(
     query: str,
     mark_as_read: bool,
     unread_count: Optional[int] = None,
+    read_inbox_max_id: Optional[int] = None,
 ) -> bool:
     """
     Обрабатывает один чат и отправляет результат
@@ -2759,10 +2871,13 @@ async def _process_single_chat(
         if unread_count is not None and unread_count <= 0:
             logger.info(f"⏭️ Пропускаем чат '{chat_name}': нет непрочитанных сообщений")
             return False
-        effective_period_type = "last_messages"
-        effective_period_value = (
-            unread_count if unread_count is not None else config.DEFAULT_MESSAGES_LIMIT
-        )
+        effective_period_type = "unread"
+        effective_period_value = {
+            "limit": unread_count
+            if unread_count is not None
+            else config.DEFAULT_MESSAGES_LIMIT,
+            "read_inbox_max_id": read_inbox_max_id,
+        }
 
     # Получаем историю чата
     chat_history, first_message_id = await get_chat_history(
@@ -2772,6 +2887,16 @@ async def _process_single_chat(
     # Проверяем, что история не пустая
     if not chat_history or first_message_id is None:
         logger.info(f"⏭️ Пропускаем чат '{chat_name}': {chat_history}")
+        if mark_as_read and period_type == "unread" and (unread_count or 0) > 0:
+            read_success = await mark_chat_as_read(chat_entity)
+            if read_success:
+                logger.info(
+                    f"✅ Чат '{chat_name}' отмечен как прочитанный без саммари: нечего суммаризировать"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ Не удалось отметить чат '{chat_name}' как прочитанный после пустой выборки"
+                )
         return False
 
     # Формируем контекст периода для LLM
@@ -3032,11 +3157,15 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         total = len(chats_to_process)
 
         for idx, chat_data in enumerate(chats_to_process, 1):
-            if len(chat_data) == 3:
+            if len(chat_data) == 4:
+                chat_entity, chat_name, unread_count, read_inbox_max_id = chat_data
+            elif len(chat_data) == 3:
                 chat_entity, chat_name, unread_count = chat_data
+                read_inbox_max_id = None
             else:
                 chat_entity, chat_name = chat_data
                 unread_count = None
+                read_inbox_max_id = None
             try:
                 success = await _process_single_chat(
                     update,
@@ -3050,6 +3179,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                     query,
                     mark_as_read,
                     unread_count,
+                    read_inbox_max_id,
                 )
                 if success:
                     processed_count += 1

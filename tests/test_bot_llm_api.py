@@ -1,6 +1,7 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import requests
 
@@ -22,16 +23,23 @@ class DummyResponse:
             raise requests.exceptions.HTTPError(self.text, response=self)
 
 
-def _set_runtime_token(monkeypatch, token="token-1234567890"):
+def _set_runtime_token(
+    monkeypatch, token="token-1234567890", model="model/test"
+):
     monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_INTERVAL_SECONDS", 4)
+    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    bot._free_model_next_allowed_at.clear()
     monkeypatch.setattr(
         bot,
         "llm_runtime",
         LLMRuntimeConfig(
             "https://openrouter.ai/api/v1/chat/completions",
             token,
-            "model/test",
+            model,
         ),
     )
 
@@ -199,6 +207,95 @@ def test_call_llm_api_validation_and_failures(monkeypatch):
         assert "Timeout LLM API" in str(e)
 
 
+def test_call_llm_api_applies_interval_only_for_free_models(monkeypatch):
+    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
+    seen = {"count": 0}
+    sleeps = []
+    current_time = {"value": 100.0}
+
+    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        current_time["value"] += seconds
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen["count"] += 1
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    bot.call_llm_api([{"role": "user", "content": "hi"}])
+    bot.call_llm_api([{"role": "user", "content": "hi-again"}])
+
+    assert seen["count"] == 2
+    assert sleeps == [4]
+
+
+def test_call_llm_api_does_not_apply_interval_for_paid_models(monkeypatch):
+    bot._free_model_next_allowed_at.clear()
+    monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://openrouter.ai/api/v1/chat/completions",
+            "token-1234567890",
+            "deepseek/deepseek-v3.2",
+        ),
+    )
+    sleeps = []
+
+    monkeypatch.setattr(bot.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        bot.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(
+            200, {"choices": [{"message": {"content": "ok"}}]}
+        ),
+    )
+
+    bot.call_llm_api([{"role": "user", "content": "hi"}])
+    bot.call_llm_api([{"role": "user", "content": "hi-again"}])
+
+    assert sleeps == []
+
+
+def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
+    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
+    sleeps = []
+    current_time = {"value": 50.0}
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        current_time["value"] += seconds
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return DummyResponse(429, {"error": {"message": "ratelimit"}})
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+
+    assert answer == "ok"
+    assert attempts["count"] == 2
+    assert sleeps == [11]
+
+
 def test_parse_command_with_gpt(monkeypatch):
     monkeypatch.setattr(
         bot,
@@ -358,6 +455,92 @@ def test_get_chat_history_empty_returns_empty_string(monkeypatch):
     assert first_id is None
 
 
+def test_get_chat_history_last_messages_uses_latest_messages_in_chronological_order(
+    monkeypatch,
+):
+    calls = {}
+
+    async def fake_ensure_connected():
+        return None
+
+    class DummyClient:
+        async def iter_messages(self, chat_entity, **kwargs):
+            calls["kwargs"] = kwargs
+            sender = SimpleNamespace(id=1, first_name="User", last_name=None)
+            for message_id, text in (
+                (30, "newest"),
+                (20, "middle"),
+                (10, "oldest in slice"),
+            ):
+                yield SimpleNamespace(
+                    id=message_id,
+                    text=text,
+                    sender=sender,
+                    date=datetime(2026, 3, 9, 10, 0, tzinfo=timezone.utc),
+                )
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", fake_ensure_connected)
+    monkeypatch.setattr(bot, "telethon_client", DummyClient())
+
+    history, first_id = asyncio.run(bot.get_chat_history(object(), "last_messages", 3))
+
+    assert calls["kwargs"]["reverse"] is False
+    assert first_id == 10
+    assert history.index("oldest in slice") < history.index("middle") < history.index(
+        "newest"
+    )
+
+
+def test_get_chat_history_unread_uses_read_boundary(monkeypatch):
+    calls = {}
+
+    async def fake_ensure_connected():
+        return None
+
+    class DummyClient:
+        async def iter_messages(self, chat_entity, **kwargs):
+            calls["kwargs"] = kwargs
+            sender = SimpleNamespace(id=1, first_name="User", last_name=None)
+            if kwargs.get("min_id") == 100:
+                for message_id, text in (
+                    (102, "fresh 2026"),
+                    (101, "still unread 2026"),
+                ):
+                    yield SimpleNamespace(
+                        id=message_id,
+                        text=text,
+                        sender=sender,
+                        date=datetime(2026, 3, 9, 10, 0, tzinfo=timezone.utc),
+                    )
+            else:
+                for message_id, text in (
+                    (2, "old 2023"),
+                    (1, "very old 2023"),
+                ):
+                    yield SimpleNamespace(
+                        id=message_id,
+                        text=text,
+                        sender=sender,
+                        date=datetime(2023, 9, 22, 10, 0, tzinfo=timezone.utc),
+                    )
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", fake_ensure_connected)
+    monkeypatch.setattr(bot, "telethon_client", DummyClient())
+
+    history, first_id = asyncio.run(
+        bot.get_chat_history(
+            object(),
+            "unread",
+            {"limit": 2, "read_inbox_max_id": 100},
+        )
+    )
+
+    assert calls["kwargs"]["min_id"] == 100
+    assert first_id == 101
+    assert "fresh 2026" in history
+    assert "old 2023" not in history
+
+
 def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
     calls = {}
 
@@ -412,10 +595,115 @@ def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
     )
 
     assert success is True
-    assert calls["period_type"] == "last_messages"
-    assert calls["period_value"] == 7
+    assert calls["period_type"] == "unread"
+    assert calls["period_value"] == {
+        "limit": 7,
+        "read_inbox_max_id": None,
+    }
     assert calls["period_text"] == "непрочитанные сообщения (7)"
     assert calls["marked"] is True
+
+
+def test_process_single_chat_unread_mode_uses_unread_history(monkeypatch):
+    calls = {}
+
+    async def fake_get_history(chat_entity, period_type=None, period_value=None):
+        calls["period_type"] = period_type
+        calls["period_value"] = period_value
+        if period_type == "unread":
+            return "[2026-03-09 10:00:00] User: fresh unread", 101
+        return "[2023-09-22 10:00:00] User: stale old", 1
+
+    async def fake_process(chat_history, query, period_text):
+        calls["history"] = chat_history
+        return "summary"
+
+    class DummyProcessing:
+        async def edit_text(self, text):
+            return None
+
+    class DummyMessage:
+        def __init__(self):
+            self.sent = []
+
+        async def reply_text(self, text, parse_mode=None):
+            self.sent.append((text, parse_mode))
+            return None
+
+    update = type("Update", (), {"message": DummyMessage()})()
+    chat_entity = type(
+        "Entity", (), {"id": -1001234567890, "title": "AI Chat", "username": None}
+    )()
+
+    monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
+    monkeypatch.setattr(bot, "process_chat_with_openai", fake_process)
+    async def fake_mark_read(chat_entity):
+        return True
+
+    monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
+
+    success = asyncio.run(
+        bot._process_single_chat(
+            update,
+            DummyProcessing(),
+            chat_entity,
+            "AI Chat",
+            1,
+            2,
+            "unread",
+            None,
+            "query",
+            False,
+            unread_count=2,
+        )
+    )
+
+    assert success is True
+    assert calls["period_type"] == "unread"
+    assert calls["history"] == "[2026-03-09 10:00:00] User: fresh unread"
+
+
+def test_process_single_chat_unread_marks_read_when_nothing_to_summarize(monkeypatch):
+    calls = {"marked": 0}
+
+    async def fake_get_history(chat_entity, period_type=None, period_value=None):
+        return "", None
+
+    async def fake_mark_read(chat_entity):
+        calls["marked"] += 1
+        return True
+
+    class DummyProcessing:
+        async def edit_text(self, text):
+            return None
+
+    class DummyMessage:
+        async def reply_text(self, text, parse_mode=None):
+            return None
+
+    update = type("Update", (), {"message": DummyMessage()})()
+
+    monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
+    monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
+
+    success = asyncio.run(
+        bot._process_single_chat(
+            update,
+            DummyProcessing(),
+            object(),
+            "Media Chat",
+            1,
+            2,
+            "unread",
+            None,
+            "query",
+            True,
+            unread_count=3,
+        )
+    )
+
+    assert success is False
+    assert calls["marked"] == 1
 
 
 def test_process_single_chat_unread_mode_skips_empty_unread():
@@ -448,7 +736,7 @@ def test_process_single_chat_unread_mode_skips_empty_unread():
     assert success is False
 
 
-def test_resolve_single_chat_includes_unread_count(monkeypatch):
+def test_resolve_single_chat_includes_unread_state(monkeypatch):
     class DummyProcessing:
         async def edit_text(self, text):
             return None
@@ -458,11 +746,11 @@ def test_resolve_single_chat_includes_unread_count(monkeypatch):
     async def fake_find_chat_by_name(*args, **kwargs):
         return entity, "Work", 1.0
 
-    async def fake_get_unread_count(*args, **kwargs):
-        return 11
+    async def fake_get_unread_state(*args, **kwargs):
+        return 11, 222
 
     monkeypatch.setattr(bot, "find_chat_by_name", fake_find_chat_by_name)
-    monkeypatch.setattr(bot, "_get_unread_count_for_chat", fake_get_unread_count)
+    monkeypatch.setattr(bot, "_get_unread_state_for_chat", fake_get_unread_state)
 
     chats, found, error = asyncio.run(
         bot._resolve_single_chat("Work", DummyProcessing())
@@ -470,6 +758,7 @@ def test_resolve_single_chat_includes_unread_count(monkeypatch):
     assert error is None
     assert found == "Work"
     assert chats[0][2] == 11
+    assert chats[0][3] == 222
 
 
 def test_run_scheduled_summary_job_failure_sets_retry(monkeypatch):
