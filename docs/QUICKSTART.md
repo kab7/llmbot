@@ -64,8 +64,12 @@ TELEGRAM_PHONE=+79991234567
 # OpenRouter-compatible LLM API (опционально)
 # Получите токен: https://openrouter.ai/keys
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
 PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
+
+FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
+FALLBACK_LLM_MODEL=openrouter/free
+FALLBACK_LLM_TOKEN=
 
 # Admin
 ADMIN_USER_ID=987654321
@@ -132,10 +136,14 @@ chmod 600 .env
 /seturl primary <url>        # Поменять primary endpoint
 /seturl fallback <url>       # Поменять fallback endpoint
 /setmodel primary <model>    # Поменять primary модель
+/setmodel primary <model1,model2,...>    # Поменять primary список моделей
 /setmodel fallback <model>   # Поменять fallback модель
+/setmodel fallback <model1,model2,...>   # Поменять fallback список моделей
 /settoken primary <token>    # Поменять primary токен
 /settoken fallback <token>   # Поменять fallback токен
 ```
+
+Если для `primary` или `fallback` задано несколько моделей через запятую, бот перебирает их по порядку в рамках одной попытки. Пауза и retry применяются только после полного неуспешного прохода по всему списку.
 
 ## Команды бота
 
@@ -146,12 +154,13 @@ chmod 600 .env
 - `/llmconfig` - показать текущие LLM настройки
 - `/limits [primary|fallback]` - показать лимиты API ключа
 - `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible API
-- `/setmodel [primary|fallback] <model>` - задать модель
+- `/setmodel [primary|fallback] <model[,model2,...]>` - задать одну или несколько моделей
 - `/settoken [primary|fallback] <token>` - задать токен
 
 **LLM runtime:**
 - URL, токен и модель задаются в `config.py` по умолчанию
 - Во время работы могут быть переопределены через `/seturl`, `/settoken`, `/setmodel`
+- Для `primary` и `fallback` можно задать несколько моделей через запятую
 
 ## Что дальше?
 

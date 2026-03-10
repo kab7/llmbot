@@ -413,6 +413,8 @@ def _is_free_model_name(model: str) -> bool:
 
 
 def _is_fallback_candidate(candidate) -> bool:
+    if hasattr(candidate, "scope"):
+        return getattr(candidate, "scope", "") == "fallback"
     fallback = llm_runtime.get_fallback_settings()
     return (
         candidate.url == fallback.url
@@ -615,6 +617,7 @@ def _call_llm_api_internal(
     messages: list,
     candidates_override: Optional[list] = None,
     rate_limit_callback: Optional[Any] = None,
+    response_validator: Optional[Any] = None,
 ) -> Dict[str, str]:
     """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
     try:
@@ -672,32 +675,34 @@ def _call_llm_api_internal(
             logger.debug(f"  Messages count: {len(messages)}")
 
         max_attempts = config.LLM_MAX_RETRIES
-        response = None
-        used_model = None
-        used_url = None
         last_error = None
+        last_status_code = None
+        last_error_details = ""
 
-        for candidate_idx, candidate in enumerate(candidates, start=1):
-            payload = {
-                "model": candidate.model,
-                "messages": messages,
-            }
-            headers = build_headers(candidate.token)
-            safe_url = _sanitize_url_for_logs(candidate.url)
-            logger.info(
-                f"   Candidate {candidate_idx}/{len(candidates)}: model={candidate.model}, url={safe_url}"
-            )
-            llm_traffic_logger.info(
-                "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
-                request_id,
-                candidate.model,
-                safe_url,
-                json.dumps(payload, ensure_ascii=False),
-            )
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
+        for attempt in range(1, max_attempts + 1):
+            round_wait_seconds = 0
+            logger.info("🔁 Раунд LLM попытки %s/%s", attempt, max_attempts)
 
-            for attempt in range(1, max_attempts + 1):
+            for candidate_idx, candidate in enumerate(candidates, start=1):
+                payload = {
+                    "model": candidate.model,
+                    "messages": messages,
+                }
+                headers = build_headers(candidate.token)
+                safe_url = _sanitize_url_for_logs(candidate.url)
+                logger.info(
+                    f"   Candidate {candidate_idx}/{len(candidates)}: model={candidate.model}, url={safe_url}"
+                )
+                llm_traffic_logger.info(
+                    "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
+                    request_id,
+                    candidate.model,
+                    safe_url,
+                    json.dumps(payload, ensure_ascii=False),
+                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
+
                 _wait_for_free_model_slot(candidate)
                 try:
                     response = requests.post(
@@ -716,37 +721,22 @@ def _call_llm_api_internal(
                         attempt,
                         str(e),
                     )
-                    if isinstance(e, requests.exceptions.Timeout):
-                        logger.error(
-                            f"⏱️ Timeout от LLM (model={candidate.model}, timeout={config.LLM_REQUEST_TIMEOUT_SECONDS}s): {e}"
-                        )
-                        if candidate_idx < len(candidates):
-                            logger.warning(
-                                f"↪️ Timeout primary '{candidate.model}', сразу переключаюсь на fallback..."
-                            )
-                            response = None
-                            break
-                        raise Exception(
-                            f"Timeout LLM API ({config.LLM_REQUEST_TIMEOUT_SECONDS}s): {str(e)}"
-                        )
+                    wait_seconds = 2 ** (attempt - 1)
+                    round_wait_seconds = max(round_wait_seconds, wait_seconds)
                     logger.error(
-                        f"Ошибка HTTP запроса к API (model={candidate.model}, attempt {attempt}/{max_attempts}): {e}"
+                        f"Ошибка HTTP запроса к API (model={candidate.model}, round {attempt}/{max_attempts}): {e}"
                     )
-                    if attempt < max_attempts:
-                        wait_seconds = 2 ** (attempt - 1)
-                        time.sleep(wait_seconds)
-                        continue
                     if candidate_idx < len(candidates):
                         logger.warning(
-                            f"↪️ Ошибка primary candidate '{candidate.model}', переключаюсь на fallback..."
+                            "↪️ Не удалось получить ответ от '%s', пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
                         )
-                        response = None
-                        break
-                    raise Exception(f"Ошибка LLM API: {str(e)}")
+                    continue
 
                 logger.info(
                     f"📥 HTTP Response: {response.status_code} "
-                    f"(model={candidate.model}, attempt {attempt}/{max_attempts})"
+                    f"(model={candidate.model}, round {attempt}/{max_attempts})"
                 )
                 llm_traffic_logger.info(
                     "LLM_RESPONSE id=%s candidate=%s url=%s attempt=%s status=%s body=%s",
@@ -760,11 +750,17 @@ def _call_llm_api_internal(
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f"  Response size: {len(response.text)} bytes")
 
-                if response.status_code == 429 and attempt < max_attempts:
+                if response.status_code == 429:
                     wait_seconds = _apply_free_model_429_backoff(candidate, attempt)
                     if wait_seconds <= 0:
                         wait_seconds = 2 ** (attempt - 1)
+                    round_wait_seconds = max(round_wait_seconds, wait_seconds)
                     details = extract_error_details(response)
+                    last_status_code = 429
+                    last_error_details = details
+                    last_error = Exception(
+                        f"Ошибка LLM API ({response.status_code}): {details}"
+                    )
                     if rate_limit_callback is not None:
                         try:
                             rate_limit_callback(candidate, wait_seconds, details)
@@ -774,104 +770,150 @@ def _call_llm_api_internal(
                                 callback_error,
                             )
                     logger.warning(
-                        f"⏳ LLM rate limit (429), retry через {wait_seconds}s: {details}"
+                        "⏳ LLM rate limit (429), модель '%s' пропускается в этом раунде: %s",
+                        candidate.model,
+                        details,
                     )
-                    time.sleep(wait_seconds)
+                    if candidate_idx < len(candidates):
+                        logger.warning(
+                            "↪️ После 429 на '%s' пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
+                        )
                     continue
-                break
 
-            if response is None:
-                continue
-
-            if response.status_code != 200 and candidate_idx < len(candidates):
-                details = extract_error_details(response)
-                next_model = candidates[candidate_idx].model
-                logger.warning(
-                    f"↪️ Переключаюсь на fallback-модель '{next_model}' после ошибки primary '{candidate.model}': {details}"
-                )
-                last_error = Exception(
-                    f"Ошибка LLM API ({response.status_code}): {details}"
-                )
-                continue
-
-            if response.status_code != 200:
-                details = extract_error_details(response)
-                logger.error(f"Ошибка API ({response.status_code}): {response.text}")
-                if response.status_code == 429:
-                    raise Exception(
-                        f"Превышен лимит запросов к LLM API (429). {details}"
+                if response.status_code != 200:
+                    details = extract_error_details(response)
+                    last_status_code = response.status_code
+                    last_error_details = details
+                    last_error = Exception(
+                        f"Ошибка LLM API ({response.status_code}): {details}"
                     )
-                raise Exception(f"Ошибка LLM API ({response.status_code}): {details}")
-
-            try:
-                result = response.json()
-            except Exception as e:
-                if candidate_idx < len(candidates):
                     logger.warning(
-                        f"↪️ Некорректный JSON от primary '{candidate.model}', пробую fallback. Ошибка: {e}"
+                        "⚠️ Модель '%s' вернула ошибку %s: %s",
+                        candidate.model,
+                        response.status_code,
+                        details,
                     )
+                    if candidate_idx < len(candidates):
+                        logger.warning(
+                            "↪️ После ошибки '%s' пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
+                        )
+                    continue
+
+                try:
+                    result = response.json()
+                except Exception as e:
                     last_error = e
-                    continue
-                raise Exception(f"Ошибка парсинга ответа LLM API: {e}")
-
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"📋 Структура ответа: {list(result.keys())}")
-
-            content = None
-            if "choices" in result:
-                content = result["choices"][0]["message"]["content"]
-            else:
-                err = Exception("API вернул неожиданный формат ответа")
-                if candidate_idx < len(candidates):
                     logger.warning(
-                        f"↪️ Неожиданный формат от primary '{candidate.model}', пробую fallback."
+                        "⚠️ Некорректный JSON от модели '%s': %s",
+                        candidate.model,
+                        e,
                     )
-                    last_error = err
+                    if candidate_idx < len(candidates):
+                        logger.warning(
+                            "↪️ После некорректного JSON от '%s' пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
+                        )
                     continue
-                logger.error(
-                    f"Неожиданный формат ответа API. Ключи верхнего уровня: {list(result.keys())}"
-                )
-                logger.error(
-                    f"Полный ответ: {json.dumps(result, ensure_ascii=False, indent=2)[:500]}"
-                )
-                raise err
 
-            if not content:
-                err = Exception("API вернул пустой ответ")
-                if candidate_idx < len(candidates):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"📋 Структура ответа: {list(result.keys())}")
+
+                content = None
+                if "choices" in result:
+                    content = result["choices"][0]["message"]["content"]
+                else:
+                    last_error = Exception("API вернул неожиданный формат ответа")
                     logger.warning(
-                        f"↪️ Пустой ответ от primary '{candidate.model}', пробую fallback."
+                        "⚠️ Неожиданный формат ответа от модели '%s'",
+                        candidate.model,
                     )
-                    last_error = err
+                    if candidate_idx < len(candidates):
+                        logger.warning(
+                            "↪️ После неожиданного формата от '%s' пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
+                        )
                     continue
-                raise err
 
-            actual_model = result.get("model") if isinstance(result, dict) else None
-            used_model = (
-                str(actual_model).strip()
-                if isinstance(actual_model, str) and actual_model.strip()
-                else candidate.model
-            )
-            used_url = safe_url
-            logger.info(
-                f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
-            )
-            llm_traffic_logger.info(
-                "LLM_RESULT id=%s model=%s url=%s content=%s",
-                request_id,
-                used_model,
-                used_url,
-                content,
-            )
-            if logger.isEnabledFor(logging.DEBUG):
-                preview = content[:200] + "..." if len(content) > 200 else content
-                logger.debug(f"✅ Ответ от LLM: {preview}")
-            return {
-                "content": content,
-                "model": used_model or "",
-                "url": used_url or "",
-            }
+                if not content:
+                    last_error = Exception("API вернул пустой ответ")
+                    logger.warning("⚠️ Пустой ответ от модели '%s'", candidate.model)
+                    if candidate_idx < len(candidates):
+                        logger.warning(
+                            "↪️ После пустого ответа от '%s' пробую следующую модель '%s'",
+                            candidate.model,
+                            candidates[candidate_idx].model,
+                        )
+                    continue
 
+                if response_validator is not None:
+                    rejection_reason = response_validator(content, candidate)
+                    if rejection_reason:
+                        last_error = Exception(rejection_reason)
+                        logger.warning(
+                            "⚠️ Ответ модели '%s' отклонен валидатором: %s",
+                            candidate.model,
+                            rejection_reason,
+                        )
+                        if candidate_idx < len(candidates):
+                            logger.warning(
+                                "↪️ После некачественного ответа от '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                candidates[candidate_idx].model,
+                            )
+                        continue
+
+                actual_model = result.get("model") if isinstance(result, dict) else None
+                used_model = (
+                    str(actual_model).strip()
+                    if isinstance(actual_model, str) and actual_model.strip()
+                    else candidate.model
+                )
+                used_url = safe_url
+                logger.info(
+                    f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
+                )
+                llm_traffic_logger.info(
+                    "LLM_RESULT id=%s model=%s url=%s content=%s",
+                    request_id,
+                    used_model,
+                    used_url,
+                    content,
+                )
+                if logger.isEnabledFor(logging.DEBUG):
+                    preview = content[:200] + "..." if len(content) > 200 else content
+                    logger.debug(f"✅ Ответ от LLM: {preview}")
+                return {
+                    "content": content,
+                    "model": used_model or "",
+                    "url": used_url or "",
+                    "candidate_model": candidate.model,
+                    "scope": getattr(candidate, "scope", "primary"),
+                }
+
+            if attempt < max_attempts:
+                wait_seconds = round_wait_seconds or 2 ** (attempt - 1)
+                logger.warning(
+                    "⏳ Раунд LLM %s/%s завершился без успеха, жду %ss и повторяю весь список моделей",
+                    attempt,
+                    max_attempts,
+                    wait_seconds,
+                )
+                time.sleep(wait_seconds)
+
+        if last_status_code == 429:
+            raise Exception(
+                f"Превышен лимит запросов к LLM API (429). {last_error_details}"
+            )
+        if isinstance(last_error, requests.exceptions.Timeout):
+            raise Exception(
+                f"Timeout LLM API ({config.LLM_REQUEST_TIMEOUT_SECONDS}s): {last_error}"
+            )
         if last_error:
             raise Exception(str(last_error))
         raise Exception("Не удалось получить корректный ответ от LLM API")
@@ -901,9 +943,12 @@ def call_llm_api_with_meta(
     messages: list,
     candidates_override: Optional[list] = None,
     rate_limit_callback: Optional[Any] = None,
+    response_validator: Optional[Any] = None,
 ) -> Dict[str, str]:
     """Вызов LLM API и возврат текста вместе с моделью/URL."""
-    return _call_llm_api_internal(messages, candidates_override, rate_limit_callback)
+    return _call_llm_api_internal(
+        messages, candidates_override, rate_limit_callback, response_validator
+    )
 
 
 async def init_telethon_client():
@@ -2180,48 +2225,21 @@ async def process_chat_with_openai(
                 asyncio.create_task, rate_limit_notifier(notice)
             )
 
+        def summary_validator(content: str, candidate) -> Optional[str]:
+            score, issues = _analyze_summary_quality(content, chat_history)
+            if score <= 0:
+                return None
+            return "; ".join(issues) or "подозрительное качество саммари"
+
         llm_result = await asyncio.to_thread(
-            call_llm_api_with_meta, messages, None, sync_rate_limit_notifier
+            call_llm_api_with_meta,
+            messages,
+            None,
+            sync_rate_limit_notifier,
+            summary_validator,
         )
         answer = llm_result.get("content", "")
         used_model = llm_result.get("model", "")
-        used_url = llm_result.get("url", "")
-
-        score, issues = _analyze_summary_quality(answer, chat_history)
-        if score > 0:
-            logger.warning(
-                "⚠️ Подозрительное качество саммари от модели '%s': %s",
-                used_model or "<unknown>",
-                "; ".join(issues) or "неизвестные причины",
-            )
-            fallback = llm_runtime.get_fallback_settings()
-            fallback_url = _sanitize_url_for_logs(fallback.url)
-            can_retry_with_fallback = bool(fallback.token) and (
-                used_model != fallback.model or used_url != fallback_url
-            )
-            if can_retry_with_fallback:
-                logger.warning(
-                    "↪️ Повторяю суммаризацию на fallback-модели '%s' из-за низкого качества",
-                    fallback.model,
-                )
-                try:
-                    fallback_result = await asyncio.to_thread(
-                        call_llm_api_with_meta,
-                        messages,
-                        [fallback],
-                        sync_rate_limit_notifier,
-                    )
-                    fallback_answer = fallback_result.get("content", "")
-                    fallback_score, fallback_issues = _analyze_summary_quality(
-                        fallback_answer, chat_history
-                    )
-                    if fallback_score <= score:
-                        answer = fallback_answer
-                        used_model = fallback_result.get("model", used_model)
-                        score = fallback_score
-                        issues = fallback_issues
-                except Exception as e:
-                    logger.warning(f"⚠️ Fallback-повтор не удался: {e}")
 
         answer = _cleanup_summary_text(answer)
         if used_model:
@@ -2340,7 +2358,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/llmconfig - показать текущие LLM настройки\n"
         "/limits [primary|fallback] - показать лимиты API ключа\n"
         "/seturl [primary|fallback] <url> - задать URL API\n"
-        "/setmodel [primary|fallback] <model> - задать модель\n"
+        "/setmodel [primary|fallback] <model[,model2,...]> - задать одну или несколько моделей\n"
         "/settoken [primary|fallback] <token> - задать API токен\n\n"
         "ℹ️ /seturl, /setmodel и /settoken сохраняют значения в .env\n\n"
         "**Примеры для чатов:**\n"
@@ -2508,7 +2526,9 @@ async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Использование:\n"
             "/setmodel primary <model>\n"
-            "/setmodel fallback <model>\n\n"
+            "/setmodel primary <model1,model2,...>\n"
+            "/setmodel fallback <model>\n"
+            "/setmodel fallback <model1,model2,...>\n\n"
             f"Primary модель: {primary_model}\n"
             f"Fallback модель: {fallback_model}"
         )
@@ -2518,7 +2538,7 @@ async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if head not in {"primary", "fallback"}:
         await update.message.reply_text(
             "❌ Укажи scope модели: primary или fallback.\n"
-            "Пример: /setmodel primary meta-llama/llama-3.3-70b-instruct:free"
+            "Пример: /setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free"
         )
         return
     scope = head

@@ -85,33 +85,38 @@ def test_runtime_fallback_overrides_and_candidates():
     cfg = LLMRuntimeConfig(
         "https://primary/v1",
         "primary-token",
-        "primary/model",
+        "primary/model,primary/alt",
         fallback_url="https://fallback/v1",
         fallback_token="fallback-token",
-        fallback_model="fallback/model",
+        fallback_model="fallback/model,fallback/alt",
     )
 
     fallback = cfg.get_fallback_settings()
     assert fallback.url == "https://fallback/v1/chat/completions"
-    assert fallback.model == "fallback/model"
+    assert fallback.model == "fallback/model,fallback/alt"
     assert fallback.token == "fallback-token"
 
     candidates = cfg.get_candidate_settings()
-    assert len(candidates) == 2
+    assert len(candidates) == 4
     assert candidates[0].model == "primary/model"
-    assert candidates[1].model == "fallback/model"
+    assert candidates[1].model == "primary/alt"
+    assert candidates[2].model == "fallback/model"
+    assert candidates[3].model == "fallback/alt"
+    assert candidates[0].scope == "primary"
+    assert candidates[2].scope == "fallback"
 
 
 def test_runtime_candidates_deduplicate_and_any_token():
     cfg = LLMRuntimeConfig(
         "https://same/v1",
         "token",
-        "model",
+        "model,model",
         fallback_url="https://same/v1",
         fallback_token="token",
-        fallback_model="model",
+        fallback_model="model,model",
     )
     assert len(cfg.get_candidate_settings()) == 1
+    assert cfg.get_candidate_settings()[0].scope == "primary"
     assert cfg.has_any_token() is True
 
     no_token_cfg = LLMRuntimeConfig(
@@ -138,6 +143,7 @@ def test_runtime_setters_validation():
         cfg.set_model("  ")
     with pytest.raises(ValueError, match="пустой"):
         cfg.set_fallback_model("  ")
+    assert cfg.set_model("model/one, ,") == "model/one"
 
     with pytest.raises(ValueError, match="http:// или https://"):
         cfg.set_url("bad-url")
@@ -167,4 +173,16 @@ def test_runtime_fallback_url_setter():
     assert (
         cfg.set_fallback_url("https://fallback.example/v1")
         == "https://fallback.example/v1/chat/completions"
+    )
+
+
+def test_runtime_normalizes_model_lists():
+    cfg = LLMRuntimeConfig(
+        "https://openrouter.ai/api/v1",
+        "primary-token-1",
+        " model/one , model/two ,, model/three ",
+    )
+    assert cfg.get_settings().model == "model/one,model/two,model/three"
+    assert cfg.set_fallback_model(" fallback/one , fallback/two ") == (
+        "fallback/one,fallback/two"
     )

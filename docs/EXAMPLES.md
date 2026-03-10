@@ -245,9 +245,18 @@
 
 **LLM runtime (настраиваемый):**
 - `/llmconfig` — посмотреть текущие параметры
-- `/setmodel [primary|fallback] <model>` — сменить модель
+- `/setmodel [primary|fallback] <model[,model2,...]>` — сменить одну или несколько моделей
 - `/seturl [primary|fallback] <url>` — сменить endpoint
 - `/settoken [primary|fallback] <token>` — сменить токен
+
+Пример с приоритетным списком моделей:
+
+```
+/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
+/setmodel fallback openrouter/free,deepseek/deepseek-chat-v3-0324:free
+```
+
+Бот попробует модели по порядку и сделает паузу только после полного неуспешного прохода по списку.
 
 ## Продвинутые сценарии
 

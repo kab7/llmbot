@@ -13,7 +13,7 @@
 - 🔍 **Умный поиск чатов** - находит чаты даже при неточном совпадении названия
 - 💾 **Контекст запросов** - запоминает последний чат и период для быстрых запросов
 - 🔐 **Доступ ко всем чатам** - через Telethon получаем доступ ко всей вашей истории переписок
-- 🤖 **Гибкая модель LLM** - настраивается через `/setmodel`
+- 🤖 **Гибкая модель LLM** - настраивается через `/setmodel`, можно задать несколько моделей по приоритету
 - 🔒 **Безопасность** - работает только для вас, все данные хранятся локально
 - ⚡ **Простота** - runtime-переопределение URL/токена/модели через команды
 
@@ -99,8 +99,13 @@ TELEGRAM_PHONE=+79991234567
 # OpenRouter-compatible LLM API (опционально)
 # Получите токен: https://openrouter.ai/keys
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
 PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
+
+# Опциональный fallback
+FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
+FALLBACK_LLM_MODEL=openrouter/free
+FALLBACK_LLM_TOKEN=
 
 # Admin
 ADMIN_USER_ID=your_telegram_user_id_here
@@ -145,7 +150,7 @@ python bot.py
 - `/llmconfig` - показать текущие runtime-настройки LLM
 - `/limits [primary|fallback]` - показать лимиты/квоты API ключа
 - `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible endpoint
-- `/setmodel [primary|fallback] <model>` - задать модель
+- `/setmodel [primary|fallback] <model[,model2,...]>` - задать одну или несколько моделей
 - `/settoken [primary|fallback] <token>` - задать API ключ
 
 Команды `/seturl`, `/setmodel`, `/settoken` сохраняют изменения в `.env`, поэтому настройки сохраняются после перезапуска.
@@ -171,6 +176,19 @@ DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
 Бот использует primary + fallback runtime-модели для парсинга команд и анализа переписок.
 По умолчанию primary — `meta-llama/llama-3.3-70b-instruct:free`, fallback — `openrouter/free`.
 Изменение через `/setmodel primary <model>` и `/setmodel fallback <model>`.
+
+Для `primary` и `fallback` можно задать список моделей через запятую:
+
+```text
+/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
+/setmodel fallback openrouter/free,deepseek/deepseek-chat-v3-0324:free
+```
+
+Логика выбора такая:
+- внутри одной попытки бот перебирает модели по порядку без паузы
+- если модель вернула `429` или некачественный ответ, бот сразу пробует следующую
+- пауза применяется только после полного неуспешного прохода по всему списку
+- затем бот повторяет тот же список моделей
 
 ## Использование
 

@@ -12,6 +12,7 @@ class LLMSettings:
     url: str
     token: str
     model: str
+    scope: str = "primary"
 
     def masked_token(self) -> str:
         if not self.token:
@@ -67,10 +68,15 @@ class LLMRuntimeConfig:
 
     @staticmethod
     def _normalize_model(model: str) -> str:
-        value = (model or "").strip()
-        if not value:
+        parts = [part.strip() for part in (model or "").split(",")]
+        normalized_parts = [part for part in parts if part]
+        if not normalized_parts:
             raise ValueError("Модель не может быть пустой")
-        return value
+        return ",".join(normalized_parts)
+
+    @staticmethod
+    def _split_models(model: str) -> list[str]:
+        return [part.strip() for part in (model or "").split(",") if part.strip()]
 
     def set_url(self, url: str) -> str:
         self._settings.url = normalize_chat_completions_url(url)
@@ -116,6 +122,7 @@ class LLMRuntimeConfig:
             url=self._settings.url,
             token=self._settings.token,
             model=self._settings.model,
+            scope="primary",
         )
 
     def get_fallback_settings(self) -> LLMSettings:
@@ -123,16 +130,28 @@ class LLMRuntimeConfig:
             url=self._fallback_settings.url,
             token=self._fallback_settings.token,
             model=self._fallback_settings.model,
+            scope="fallback",
         )
 
     def get_candidate_settings(self) -> list[LLMSettings]:
         primary = self.get_settings()
         fallback = self.get_fallback_settings()
-        candidates = [primary]
-        if (fallback.url, fallback.model, fallback.token) != (
-            primary.url,
-            primary.model,
-            primary.token,
-        ):
-            candidates.append(fallback)
+        candidates: list[LLMSettings] = []
+        seen: set[tuple[str, str, str]] = set()
+        for model_name in self._split_models(primary.model):
+            candidate = LLMSettings(
+                primary.url, primary.token, model_name, scope="primary"
+            )
+            key = (candidate.url, candidate.model, candidate.token)
+            if key not in seen:
+                candidates.append(candidate)
+                seen.add(key)
+        for model_name in self._split_models(fallback.model):
+            candidate = LLMSettings(
+                fallback.url, fallback.token, model_name, scope="fallback"
+            )
+            key = (candidate.url, candidate.model, candidate.token)
+            if key not in seen:
+                candidates.append(candidate)
+                seen.add(key)
         return candidates

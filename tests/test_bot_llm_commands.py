@@ -62,7 +62,9 @@ def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
             update, DummyContext(["fallback", "https://fallback.example/v1"])
         )
     )
-    asyncio.run(bot.setmodel_command(update, DummyContext(["primary", "model/test"])))
+    asyncio.run(
+        bot.setmodel_command(update, DummyContext(["primary", "model/test,model/alt"]))
+    )
     asyncio.run(
         bot.setmodel_command(update, DummyContext(["fallback", "fallback/model"]))
     )
@@ -85,7 +87,7 @@ def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
     env_text = env_path.read_text(encoding="utf-8")
     assert "PRIMARY_LLM_URL=https://example.com/v1/chat/completions" in env_text
     assert "FALLBACK_LLM_URL=https://fallback.example/v1/chat/completions" in env_text
-    assert "PRIMARY_LLM_MODEL=model/test" in env_text
+    assert "PRIMARY_LLM_MODEL=model/test,model/alt" in env_text
     assert "FALLBACK_LLM_MODEL=fallback/model" in env_text
     assert "PRIMARY_LLM_API_KEY=new-token-123456" in env_text
     assert "FALLBACK_LLM_TOKEN=fallback-token-5555" in env_text
@@ -105,7 +107,7 @@ def test_set_commands_usage_and_validation(monkeypatch, tmp_path):
 
     texts = [text for text, _ in update.message.replies]
     assert any("/seturl <url>" in text for text in texts)
-    assert any("/setmodel primary <model>" in text for text in texts)
+    assert any("/setmodel primary <model1,model2,...>" in text for text in texts)
     assert any("Укажи scope модели: primary или fallback" in text for text in texts)
     assert any("Значение model не указано" in text for text in texts)
     assert any("/settoken <token>" in text for text in texts)

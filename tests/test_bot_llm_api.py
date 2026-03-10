@@ -24,7 +24,10 @@ class DummyResponse:
 
 
 def _set_runtime_token(
-    monkeypatch, token="token-1234567890", model="model/test"
+    monkeypatch,
+    token="token-1234567890",
+    model="model/test",
+    fallback_model="openrouter/free",
 ):
     monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
@@ -42,6 +45,7 @@ def _set_runtime_token(
             "https://openrouter.ai/api/v1/chat/completions",
             token,
             model,
+            fallback_model=fallback_model,
         ),
     )
 
@@ -121,7 +125,7 @@ def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):
     answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
 
     assert answer == "ok-fallback"
-    assert seen_models.count("model/test") == 3
+    assert seen_models.count("model/test") == 1
     assert "openrouter/free" in seen_models
 
 
@@ -166,6 +170,111 @@ def test_call_llm_api_fallback_uses_configured_url_token_and_model(monkeypatch):
     assert seen_calls[1]["auth"] == "Bearer fallback-token-5678"
 
 
+def test_call_llm_api_tries_multiple_primary_models_before_sleep(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "primary/model-a,primary/model-b",
+        ),
+    )
+    seen_models = []
+    sleeps = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if json["model"] == "primary/model-a":
+            return DummyResponse(429, {"error": {"message": "ratelimit"}})
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+
+    assert answer == "ok"
+    assert seen_models == ["primary/model-a", "primary/model-b"]
+    assert sleeps == []
+
+
+def test_call_llm_api_retries_full_model_round_after_sleep(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "primary/model-a,primary/model-b",
+            fallback_url="https://primary.example/v1",
+            fallback_token="primary-token-1234",
+            fallback_model="primary/model-a",
+        ),
+    )
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 10)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 3)
+    seen_models = []
+    sleeps = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if seen_models == ["primary/model-a", "primary/model-b", "primary/model-a"]:
+            return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return DummyResponse(429, {"error": {"message": "ratelimit"}})
+
+    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+
+    assert answer == "ok"
+    assert seen_models == [
+        "primary/model-a",
+        "primary/model-b",
+        "primary/model-a",
+    ]
+    assert sleeps == [1]
+
+
+def test_call_llm_api_response_validator_tries_next_model_without_sleep(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "primary/model-a,primary/model-b",
+        ),
+    )
+    seen_models = []
+    sleeps = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if json["model"] == "primary/model-a":
+            return DummyResponse(200, {"choices": [{"message": {"content": "bad"}}]})
+        return DummyResponse(200, {"choices": [{"message": {"content": "good"}}]})
+
+    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    result = bot.call_llm_api_with_meta(
+        [{"role": "user", "content": "hi"}],
+        response_validator=lambda content, candidate: (
+            "мусор"
+            if content == "bad"
+            else None
+        ),
+    )
+
+    assert result["content"] == "good"
+    assert seen_models == ["primary/model-a", "primary/model-b"]
+    assert sleeps == []
+
+
 def test_call_llm_api_validation_and_failures(monkeypatch):
     _set_runtime_token(monkeypatch, token="")
     try:
@@ -174,7 +283,7 @@ def test_call_llm_api_validation_and_failures(monkeypatch):
     except Exception as e:  # noqa: BLE001
         assert "/settoken" in str(e)
 
-    _set_runtime_token(monkeypatch)
+    _set_runtime_token(monkeypatch, fallback_model="model/test")
     monkeypatch.setattr(
         bot.requests,
         "post",
@@ -270,7 +379,11 @@ def test_call_llm_api_does_not_apply_interval_for_paid_models(monkeypatch):
 
 
 def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
-    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
+    _set_runtime_token(
+        monkeypatch,
+        model="meta-llama/llama-3.3-70b-instruct:free",
+        fallback_model="meta-llama/llama-3.3-70b-instruct:free",
+    )
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 5)
@@ -301,7 +414,11 @@ def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
 
 
 def test_call_llm_api_free_model_uses_growing_429_backoff(monkeypatch):
-    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
+    _set_runtime_token(
+        monkeypatch,
+        model="meta-llama/llama-3.3-70b-instruct:free",
+        fallback_model="meta-llama/llama-3.3-70b-instruct:free",
+    )
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 5)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 10)
@@ -398,9 +515,15 @@ def test_parse_command_with_gpt_schedule_fields(monkeypatch):
 def test_process_chat_with_openai(monkeypatch):
     captured = {}
 
-    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+    ):
         captured["messages"] = messages
         captured["override"] = candidates_override
+        assert response_validator is not None
         return {
             "content": "summary",
             "model": "model/test",
@@ -418,7 +541,12 @@ def test_process_chat_with_openai(monkeypatch):
     assert "[PII]" not in payload
     assert captured["override"] is None
 
-    def raise_error(messages, candidates_override=None, rate_limit_callback=None):
+    def raise_error(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+    ):
         raise Exception("boom")
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", raise_error)
@@ -442,18 +570,20 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
         ),
     )
 
-    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+    ):
         calls.append(candidates_override)
-        if candidates_override:
-            return {
-                "content": "Нормальная краткая суммаризация без артефактов.",
-                "model": "fallback/model",
-                "url": "https://fallback.example/v1/chat/completions",
-            }
+        assert response_validator is not None
+        bad_content = 'Снижение ручного кодирования,.attr(loading="lazy") и мусор в录入 тексте'
+        assert response_validator(bad_content, SimpleNamespace(model="primary/model"))
         return {
-            "content": 'Снижение ручного кодирования,.attr(loading="lazy") и мусор в录入 тексте',
-            "model": "primary/model",
-            "url": "https://primary.example/v1/chat/completions",
+            "content": "Нормальная краткая суммаризация без артефактов.",
+            "model": "fallback/model",
+            "url": "https://fallback.example/v1/chat/completions",
         }
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
@@ -465,10 +595,8 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
         )
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0] is None
-    assert isinstance(calls[1], list)
-    assert calls[1][0].model == "fallback/model"
     assert "Нормальная краткая суммаризация" in result
     assert "Модель: `fallback/model`" in result
 
@@ -479,7 +607,12 @@ def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
     async def notifier(message_text: str):
         notifications.append(message_text)
 
-    def fake_call(messages, candidates_override=None, rate_limit_callback=None):
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+    ):
         candidate = SimpleNamespace(model="meta-llama/llama-3.3-70b-instruct:free")
         assert rate_limit_callback is not None
         rate_limit_callback(candidate, 12, "temporarily rate-limited upstream")
