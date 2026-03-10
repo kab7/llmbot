@@ -23,8 +23,10 @@ def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", "5")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", "13")
+    monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", "3")
     monkeypatch.setenv("FALLBACK_FREE_MODEL_INTERVAL_SECONDS", "6")
     monkeypatch.setenv("FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", "14")
+    monkeypatch.setenv("FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS", "2")
 
     cfg = _reload_config()
 
@@ -43,8 +45,10 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.LLM_MAX_RETRIES == 4
     assert cfg.PRIMARY_FREE_MODEL_INTERVAL_SECONDS == 5
     assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS == 13
+    assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS == 3
     assert cfg.FALLBACK_FREE_MODEL_INTERVAL_SECONDS == 6
     assert cfg.FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS == 14
+    assert cfg.FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS == 2
     assert cfg.DEFAULT_LLM_URL.endswith("/chat/completions")
     assert "валидным JSON" in cfg.PARSER_PROMPT
     assert "историей Telegram чатов" in cfg.PROCESSOR_PROMPT

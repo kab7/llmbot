@@ -435,6 +435,14 @@ def _get_free_model_timing(candidate) -> tuple[int, int]:
     )
 
 
+def _get_free_model_backoff_step_seconds(candidate) -> int:
+    if not _is_free_model_name(candidate.model):
+        return 0
+    if _is_fallback_candidate(candidate):
+        return config.FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS
+    return config.PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS
+
+
 def _free_model_rate_limit_key(candidate) -> str:
     return f"{candidate.url}|{candidate.model}"
 
@@ -461,17 +469,19 @@ def _wait_for_free_model_slot(candidate) -> None:
         time.sleep(wait_seconds)
 
 
-def _apply_free_model_429_backoff(candidate) -> int:
+def _apply_free_model_429_backoff(candidate, attempt: int) -> int:
     _, backoff_seconds = _get_free_model_timing(candidate)
     if backoff_seconds <= 0:
         return 0
+    step_seconds = _get_free_model_backoff_step_seconds(candidate)
+    wait_seconds = backoff_seconds + max(0, attempt - 1) * step_seconds
 
     key = _free_model_rate_limit_key(candidate)
     now = time.monotonic()
     with _free_model_rate_limit_lock:
         next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
-        _free_model_next_allowed_at[key] = max(next_allowed_at, now + backoff_seconds)
-    return backoff_seconds
+        _free_model_next_allowed_at[key] = max(next_allowed_at, now + wait_seconds)
+    return wait_seconds
 
 
 def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
@@ -751,7 +761,7 @@ def _call_llm_api_internal(
                     logger.debug(f"  Response size: {len(response.text)} bytes")
 
                 if response.status_code == 429 and attempt < max_attempts:
-                    wait_seconds = _apply_free_model_429_backoff(candidate)
+                    wait_seconds = _apply_free_model_429_backoff(candidate, attempt)
                     if wait_seconds <= 0:
                         wait_seconds = 2 ** (attempt - 1)
                     details = extract_error_details(response)

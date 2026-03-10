@@ -30,8 +30,10 @@ def _set_runtime_token(
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
     monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_INTERVAL_SECONDS", 4)
     monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
     bot._free_model_next_allowed_at.clear()
     monkeypatch.setattr(
         bot,
@@ -239,6 +241,7 @@ def test_call_llm_api_does_not_apply_interval_for_paid_models(monkeypatch):
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
     monkeypatch.setattr(
         bot,
         "llm_runtime",
@@ -270,6 +273,7 @@ def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
     _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 5)
     sleeps = []
     current_time = {"value": 50.0}
     attempts = {"count": 0}
@@ -294,6 +298,38 @@ def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
     assert answer == "ok"
     assert attempts["count"] == 2
     assert sleeps == [11]
+
+
+def test_call_llm_api_free_model_uses_growing_429_backoff(monkeypatch):
+    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 5)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 10)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 3)
+    sleeps = []
+    current_time = {"value": 50.0}
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        current_time["value"] += seconds
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        attempts["count"] += 1
+        if attempts["count"] < 4:
+            return DummyResponse(429, {"error": {"message": "ratelimit"}})
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+
+    assert answer == "ok"
+    assert attempts["count"] == 4
+    assert sleeps == [10, 13, 16]
 
 
 def test_parse_command_with_gpt(monkeypatch):
