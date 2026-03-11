@@ -164,6 +164,17 @@ SUMMARY_ARTIFACT_PATTERN = re.compile(
     r"(\.attr\s*\(|loading\s*=\s*['\"]?lazy['\"]?|</?[a-z][^>]*>|function\s*\(|\$\()",
     flags=re.IGNORECASE,
 )
+SUMMARY_BOILERPLATE_PATTERN = re.compile(
+    r"(?im)"
+    r"(суммаризац\w+\s+(?:сообщени\w+|непрочитан\w+\s+чат\w*)|"
+    r"выжимка\s+из\s+сообщени\w+|"
+    r"суть\s+канала|"
+    r"статус\s+выполнения\s+запроса|"
+    r"отмечен\w*\s+как\s+прочитан\w+|"
+    r"ежедневн\w+\s+саммари|"
+    r"требуется\s+техническ\w+\s+реализац\w+|"
+    r"по\s+предоставленн\w+\s+истори\w+)"
+)
 UNEXPECTED_SCRIPT_PATTERN = re.compile(
     r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0900-\u097f]"
 )
@@ -446,20 +457,22 @@ def _get_free_model_backoff_step_seconds(candidate) -> int:
 
 
 def _free_model_rate_limit_key(candidate) -> str:
-    return f"{candidate.url}|{candidate.model}"
+    scope = getattr(candidate, "scope", "") or (
+        "fallback" if _is_fallback_candidate(candidate) else "primary"
+    )
+    return f"{scope}|{candidate.url}"
 
 
 def _wait_for_free_model_slot(candidate) -> None:
-    interval_seconds, _ = _get_free_model_timing(candidate)
-    if interval_seconds <= 0:
+    if not _is_free_model_name(candidate.model):
         return
-
+    interval_seconds, _ = _get_free_model_timing(candidate)
     key = _free_model_rate_limit_key(candidate)
     now = time.monotonic()
     with _free_model_rate_limit_lock:
         next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
         reserved_at = max(next_allowed_at, now)
-        _free_model_next_allowed_at[key] = reserved_at + interval_seconds
+        _free_model_next_allowed_at[key] = reserved_at + max(interval_seconds, 0)
 
     wait_seconds = max(0.0, reserved_at - now)
     if wait_seconds > 0:
@@ -533,6 +546,11 @@ def _analyze_summary_quality(
         issues.append("обнаружены смешанные кириллическо-латинские токены")
         score += mixed_script_tokens
 
+    boilerplate_hits = SUMMARY_BOILERPLATE_PATTERN.findall(text)
+    if boilerplate_hits:
+        issues.append("обнаружены служебные шаблоны вместо чистого саммари")
+        score += len(boilerplate_hits)
+
     summary_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", text))
     history_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", chat_history or ""))
     extra_iso_dates = summary_iso_dates - history_iso_dates
@@ -556,9 +574,91 @@ def _analyze_summary_quality(
 def _cleanup_summary_text(text: str) -> str:
     cleaned = text or ""
     cleaned = re.sub(r"\.attr\s*\([^\n)]*\)", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"(?is)\A\s*(?:#{1,6}\s*)?"
+        r"(?:саммари|суммаризац\w*|выжимка|суть)\b[^\n]*\n+",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?im)^\s*(?:#{1,6}\s*)?содержани\w+\s+сообщени\w+[^\n]*\n?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?тема(?:\*\*)?:\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?is)\n*(?:---\s*)?(?:#{1,6}\s*)?статус(?:\s+выполнения\s+запроса)?\s*:?.*\Z",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?is)\n*(?:---\s*)?(?:#{1,6}\s*)?примечани\w*\s*:?.*\Z",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:отмечен\w*\s+как\s+прочитан\w+|"
+        r"другие\s+непрочитан\w+|"
+        r"автоматическ\w+.*саммари|"
+        r"сообщени\w+\s+отмечен\w+\s+как\s+прочитан\w+|"
+        r"для\s+ежедневн\w+\s+отправки\s+саммари|"
+        r"требуется\s+техническ\w+\s+реализац\w+).*$(?:\n)?",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(r"(?m)[ \t]+$", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def _looks_like_summary_request(text: Optional[str]) -> bool:
+    haystack = (text or "").lower()
+    return bool(
+        re.search(
+            r"(суммариз|саммар|саммари|summary|выжимк|кратк\w+\s+сводк\w+)",
+            haystack,
+        )
+    )
+
+
+def _build_analysis_query(query: Optional[str]) -> str:
+    text = " ".join((query or "").split())
+    if not text:
+        return "Сделай краткое саммари переписки по делу."
+    if not _looks_like_summary_request(text):
+        return text
+
+    cleaned = text
+    cleaned = re.sub(
+        r"(?i)(?:,?\s*(?:и\s+)?)?(?:отметь|пометь)\s+(?:их\s+)?как\s+прочитан\w+",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)(?:,?\s*(?:and\s+)?)?mark(?:\s+them)?\s+as\s+read",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)(?:,?\s*(?:и\s+)?)?(?:присылай|отправляй)\s+(?:мне\s+)?"
+        r"(?:саммари|сводк\w*|уведомлен\w*)[^,.!?]*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)(?:,?\s*)\b(?:кажд\w+\s+(?:день|недел\w*|месяц)|"
+        r"ежедневно|еженедельно|ежемесячно|раз\s+в\s+\d+\s+дн\w*)(?:\s+в\s+\d{1,2}:\d{2})?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    if cleaned:
+        return cleaned
+    return "Сделай краткое саммари переписки по делу."
 
 
 def _compact_query_for_display(query: Optional[str], max_length: int = 160) -> str:
@@ -568,6 +668,22 @@ def _compact_query_for_display(query: Optional[str], max_length: int = 160) -> s
     if len(normalized) <= max_length:
         return normalized
     return f"{normalized[: max_length - 3]}..."
+
+
+def _format_llm_stats(stats: Optional[dict[str, dict[str, int]]]) -> str:
+    if not stats:
+        return ""
+    lines = ["LLM-статистика:"]
+    for model, counters in stats.items():
+        requests_count = int(counters.get("requests", 0))
+        rate_limits = int(counters.get("rate_limits", 0))
+        successes = int(counters.get("successes", 0))
+        errors = int(counters.get("errors", 0))
+        lines.append(
+            f"- `{model}`: запросов {requests_count}, 429 {rate_limits}, "
+            f"успешно {successes}, ошибок {errors}"
+        )
+    return "\n".join(lines)
 
 
 def _split_text_chunks(text: str, max_length: int = 3900) -> list[str]:
@@ -678,233 +794,279 @@ def _call_llm_api_internal(
         last_error = None
         last_status_code = None
         last_error_details = ""
+        stats: dict[str, dict[str, int]] = {}
+        candidates_by_scope: dict[str, list] = {"primary": [], "fallback": []}
+        for candidate in candidates:
+            scope = getattr(candidate, "scope", "primary") or "primary"
+            candidates_by_scope.setdefault(scope, []).append(candidate)
 
-        for attempt in range(1, max_attempts + 1):
-            round_wait_seconds = 0
-            logger.info("🔁 Раунд LLM попытки %s/%s", attempt, max_attempts)
+        for scope in ("primary", "fallback"):
+            scope_candidates = candidates_by_scope.get(scope) or []
+            if not scope_candidates:
+                continue
 
-            for candidate_idx, candidate in enumerate(candidates, start=1):
-                payload = {
-                    "model": candidate.model,
-                    "messages": messages,
-                }
-                headers = build_headers(candidate.token)
-                safe_url = _sanitize_url_for_logs(candidate.url)
+            has_free_candidates = any(
+                _is_free_model_name(candidate.model) for candidate in scope_candidates
+            )
+            logger.info(
+                "🎯 Обрабатываю scope '%s': %s",
+                scope,
+                ", ".join(candidate.model for candidate in scope_candidates),
+            )
+
+            for attempt in range(1, max_attempts + 1):
+                round_wait_seconds = 0
                 logger.info(
-                    f"   Candidate {candidate_idx}/{len(candidates)}: model={candidate.model}, url={safe_url}"
+                    "🔁 Раунд LLM попытки %s/%s для scope '%s'",
+                    attempt,
+                    max_attempts,
+                    scope,
                 )
-                llm_traffic_logger.info(
-                    "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
-                    request_id,
-                    candidate.model,
-                    safe_url,
-                    json.dumps(payload, ensure_ascii=False),
-                )
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
 
-                _wait_for_free_model_slot(candidate)
-                try:
-                    response = requests.post(
-                        candidate.url,
-                        json=payload,
-                        headers=headers,
-                        timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+                for candidate_idx, candidate in enumerate(scope_candidates, start=1):
+                    model_stats = stats.setdefault(
+                        candidate.model,
+                        {"requests": 0, "rate_limits": 0, "successes": 0, "errors": 0},
                     )
-                except requests.exceptions.RequestException as e:
-                    last_error = e
-                    llm_traffic_logger.error(
-                        "LLM_HTTP_ERROR id=%s candidate=%s url=%s attempt=%s error=%s",
+                    model_stats["requests"] += 1
+                    payload = {
+                        "model": candidate.model,
+                        "messages": messages,
+                    }
+                    headers = build_headers(candidate.token)
+                    safe_url = _sanitize_url_for_logs(candidate.url)
+                    logger.info(
+                        f"   Candidate {candidate_idx}/{len(scope_candidates)}: model={candidate.model}, url={safe_url}"
+                    )
+                    llm_traffic_logger.info(
+                        "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
+                        request_id,
+                        candidate.model,
+                        safe_url,
+                        json.dumps(payload, ensure_ascii=False),
+                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
+
+                    _wait_for_free_model_slot(candidate)
+                    try:
+                        response = requests.post(
+                            candidate.url,
+                            json=payload,
+                            headers=headers,
+                            timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+                        )
+                    except requests.exceptions.RequestException as e:
+                        model_stats["errors"] += 1
+                        last_error = e
+                        llm_traffic_logger.error(
+                            "LLM_HTTP_ERROR id=%s candidate=%s url=%s attempt=%s error=%s",
+                            request_id,
+                            candidate.model,
+                            safe_url,
+                            attempt,
+                            str(e),
+                        )
+                        wait_seconds = 2 ** (attempt - 1)
+                        round_wait_seconds = max(round_wait_seconds, wait_seconds)
+                        logger.error(
+                            f"Ошибка HTTP запроса к API (model={candidate.model}, round {attempt}/{max_attempts}): {e}"
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ Не удалось получить ответ от '%s', пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    logger.info(
+                        f"📥 HTTP Response: {response.status_code} "
+                        f"(model={candidate.model}, round {attempt}/{max_attempts})"
+                    )
+                    llm_traffic_logger.info(
+                        "LLM_RESPONSE id=%s candidate=%s url=%s attempt=%s status=%s body=%s",
                         request_id,
                         candidate.model,
                         safe_url,
                         attempt,
-                        str(e),
-                    )
-                    wait_seconds = 2 ** (attempt - 1)
-                    round_wait_seconds = max(round_wait_seconds, wait_seconds)
-                    logger.error(
-                        f"Ошибка HTTP запроса к API (model={candidate.model}, round {attempt}/{max_attempts}): {e}"
-                    )
-                    if candidate_idx < len(candidates):
-                        logger.warning(
-                            "↪️ Не удалось получить ответ от '%s', пробую следующую модель '%s'",
-                            candidate.model,
-                            candidates[candidate_idx].model,
-                        )
-                    continue
-
-                logger.info(
-                    f"📥 HTTP Response: {response.status_code} "
-                    f"(model={candidate.model}, round {attempt}/{max_attempts})"
-                )
-                llm_traffic_logger.info(
-                    "LLM_RESPONSE id=%s candidate=%s url=%s attempt=%s status=%s body=%s",
-                    request_id,
-                    candidate.model,
-                    safe_url,
-                    attempt,
-                    response.status_code,
-                    response.text,
-                )
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"  Response size: {len(response.text)} bytes")
-
-                if response.status_code == 429:
-                    wait_seconds = _apply_free_model_429_backoff(candidate, attempt)
-                    if wait_seconds <= 0:
-                        wait_seconds = 2 ** (attempt - 1)
-                    round_wait_seconds = max(round_wait_seconds, wait_seconds)
-                    details = extract_error_details(response)
-                    last_status_code = 429
-                    last_error_details = details
-                    last_error = Exception(
-                        f"Ошибка LLM API ({response.status_code}): {details}"
-                    )
-                    if rate_limit_callback is not None:
-                        try:
-                            rate_limit_callback(candidate, wait_seconds, details)
-                        except Exception as callback_error:
-                            logger.warning(
-                                "⚠️ Не удалось вызвать rate-limit callback: %s",
-                                callback_error,
-                            )
-                    logger.warning(
-                        "⏳ LLM rate limit (429), модель '%s' пропускается в этом раунде: %s",
-                        candidate.model,
-                        details,
-                    )
-                    if candidate_idx < len(candidates):
-                        logger.warning(
-                            "↪️ После 429 на '%s' пробую следующую модель '%s'",
-                            candidate.model,
-                            candidates[candidate_idx].model,
-                        )
-                    continue
-
-                if response.status_code != 200:
-                    details = extract_error_details(response)
-                    last_status_code = response.status_code
-                    last_error_details = details
-                    last_error = Exception(
-                        f"Ошибка LLM API ({response.status_code}): {details}"
-                    )
-                    logger.warning(
-                        "⚠️ Модель '%s' вернула ошибку %s: %s",
-                        candidate.model,
                         response.status_code,
-                        details,
+                        response.text,
                     )
-                    if candidate_idx < len(candidates):
-                        logger.warning(
-                            "↪️ После ошибки '%s' пробую следующую модель '%s'",
-                            candidate.model,
-                            candidates[candidate_idx].model,
-                        )
-                    continue
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"  Response size: {len(response.text)} bytes")
 
-                try:
-                    result = response.json()
-                except Exception as e:
-                    last_error = e
-                    logger.warning(
-                        "⚠️ Некорректный JSON от модели '%s': %s",
-                        candidate.model,
-                        e,
-                    )
-                    if candidate_idx < len(candidates):
-                        logger.warning(
-                            "↪️ После некорректного JSON от '%s' пробую следующую модель '%s'",
-                            candidate.model,
-                            candidates[candidate_idx].model,
+                    if response.status_code == 429:
+                        model_stats["rate_limits"] += 1
+                        wait_seconds = _apply_free_model_429_backoff(candidate, attempt)
+                        if wait_seconds <= 0:
+                            wait_seconds = 2 ** (attempt - 1)
+                            round_wait_seconds = max(round_wait_seconds, wait_seconds)
+                        details = extract_error_details(response)
+                        last_status_code = 429
+                        last_error_details = details
+                        last_error = Exception(
+                            f"Ошибка LLM API ({response.status_code}): {details}"
                         )
-                    continue
-
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"📋 Структура ответа: {list(result.keys())}")
-
-                content = None
-                if "choices" in result:
-                    content = result["choices"][0]["message"]["content"]
-                else:
-                    last_error = Exception("API вернул неожиданный формат ответа")
-                    logger.warning(
-                        "⚠️ Неожиданный формат ответа от модели '%s'",
-                        candidate.model,
-                    )
-                    if candidate_idx < len(candidates):
+                        if rate_limit_callback is not None:
+                            try:
+                                rate_limit_callback(candidate, wait_seconds, details)
+                            except Exception as callback_error:
+                                logger.warning(
+                                    "⚠️ Не удалось вызвать rate-limit callback: %s",
+                                    callback_error,
+                                )
                         logger.warning(
-                            "↪️ После неожиданного формата от '%s' пробую следующую модель '%s'",
+                            "⏳ LLM rate limit (429), модель '%s' пропускается в этом раунде: %s",
                             candidate.model,
-                            candidates[candidate_idx].model,
+                            details,
                         )
-                    continue
-
-                if not content:
-                    last_error = Exception("API вернул пустой ответ")
-                    logger.warning("⚠️ Пустой ответ от модели '%s'", candidate.model)
-                    if candidate_idx < len(candidates):
-                        logger.warning(
-                            "↪️ После пустого ответа от '%s' пробую следующую модель '%s'",
-                            candidate.model,
-                            candidates[candidate_idx].model,
-                        )
-                    continue
-
-                if response_validator is not None:
-                    rejection_reason = response_validator(content, candidate)
-                    if rejection_reason:
-                        last_error = Exception(rejection_reason)
-                        logger.warning(
-                            "⚠️ Ответ модели '%s' отклонен валидатором: %s",
-                            candidate.model,
-                            rejection_reason,
-                        )
-                        if candidate_idx < len(candidates):
+                        if candidate_idx < len(scope_candidates):
                             logger.warning(
-                                "↪️ После некачественного ответа от '%s' пробую следующую модель '%s'",
+                                "↪️ После 429 на '%s' пробую следующую модель '%s'",
                                 candidate.model,
-                                candidates[candidate_idx].model,
+                                scope_candidates[candidate_idx].model,
                             )
                         continue
 
-                actual_model = result.get("model") if isinstance(result, dict) else None
-                used_model = (
-                    str(actual_model).strip()
-                    if isinstance(actual_model, str) and actual_model.strip()
-                    else candidate.model
-                )
-                used_url = safe_url
-                logger.info(
-                    f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
-                )
-                llm_traffic_logger.info(
-                    "LLM_RESULT id=%s model=%s url=%s content=%s",
-                    request_id,
-                    used_model,
-                    used_url,
-                    content,
-                )
-                if logger.isEnabledFor(logging.DEBUG):
-                    preview = content[:200] + "..." if len(content) > 200 else content
-                    logger.debug(f"✅ Ответ от LLM: {preview}")
-                return {
-                    "content": content,
-                    "model": used_model or "",
-                    "url": used_url or "",
-                    "candidate_model": candidate.model,
-                    "scope": getattr(candidate, "scope", "primary"),
-                }
+                    if response.status_code != 200:
+                        model_stats["errors"] += 1
+                        details = extract_error_details(response)
+                        last_status_code = response.status_code
+                        last_error_details = details
+                        last_error = Exception(
+                            f"Ошибка LLM API ({response.status_code}): {details}"
+                        )
+                        logger.warning(
+                            "⚠️ Модель '%s' вернула ошибку %s: %s",
+                            candidate.model,
+                            response.status_code,
+                            details,
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После ошибки '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
 
-            if attempt < max_attempts:
-                wait_seconds = round_wait_seconds or 2 ** (attempt - 1)
+                    try:
+                        result = response.json()
+                    except Exception as e:
+                        model_stats["errors"] += 1
+                        last_error = e
+                        logger.warning(
+                            "⚠️ Некорректный JSON от модели '%s': %s",
+                            candidate.model,
+                            e,
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После некорректного JSON от '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"📋 Структура ответа: {list(result.keys())}")
+
+                    content = None
+                    if "choices" in result:
+                        content = result["choices"][0]["message"]["content"]
+                    else:
+                        model_stats["errors"] += 1
+                        last_error = Exception("API вернул неожиданный формат ответа")
+                        logger.warning(
+                            "⚠️ Неожиданный формат ответа от модели '%s'",
+                            candidate.model,
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После неожиданного формата от '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    if not content:
+                        model_stats["errors"] += 1
+                        last_error = Exception("API вернул пустой ответ")
+                        logger.warning("⚠️ Пустой ответ от модели '%s'", candidate.model)
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После пустого ответа от '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    if response_validator is not None:
+                        rejection_reason = response_validator(content, candidate)
+                        if rejection_reason:
+                            model_stats["errors"] += 1
+                            last_error = Exception(rejection_reason)
+                            logger.warning(
+                                "⚠️ Ответ модели '%s' отклонен валидатором: %s",
+                                candidate.model,
+                                rejection_reason,
+                            )
+                            if candidate_idx < len(scope_candidates):
+                                logger.warning(
+                                    "↪️ После некачественного ответа от '%s' пробую следующую модель '%s'",
+                                    candidate.model,
+                                    scope_candidates[candidate_idx].model,
+                                )
+                            continue
+
+                    actual_model = (
+                        result.get("model") if isinstance(result, dict) else None
+                    )
+                    used_model = (
+                        str(actual_model).strip()
+                        if isinstance(actual_model, str) and actual_model.strip()
+                        else candidate.model
+                    )
+                    used_url = safe_url
+                    model_stats["successes"] += 1
+                    logger.info(
+                        f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
+                    )
+                    llm_traffic_logger.info(
+                        "LLM_RESULT id=%s model=%s url=%s content=%s",
+                        request_id,
+                        used_model,
+                        used_url,
+                        content,
+                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        preview = content[:200] + "..." if len(content) > 200 else content
+                        logger.debug(f"✅ Ответ от LLM: {preview}")
+                    return {
+                        "content": content,
+                        "model": used_model or "",
+                        "url": used_url or "",
+                        "candidate_model": candidate.model,
+                        "scope": getattr(candidate, "scope", "primary"),
+                        "stats": stats,
+                    }
+
+                if attempt < max_attempts and round_wait_seconds > 0 and not has_free_candidates:
+                    logger.warning(
+                        "⏳ Раунд LLM %s/%s для scope '%s' завершился без успеха, жду %ss и повторяю список моделей",
+                        attempt,
+                        max_attempts,
+                        scope,
+                        round_wait_seconds,
+                    )
+                    time.sleep(round_wait_seconds)
+
+            if scope == "primary" and candidates_by_scope.get("fallback"):
                 logger.warning(
-                    "⏳ Раунд LLM %s/%s завершился без успеха, жду %ss и повторяю весь список моделей",
-                    attempt,
+                    "↪️ Primary scope исчерпан после %s раундов, переключаюсь на fallback",
                     max_attempts,
-                    wait_seconds,
                 )
-                time.sleep(wait_seconds)
 
         if last_status_code == 429:
             raise Exception(
@@ -2198,12 +2360,16 @@ async def process_chat_with_openai(
         history_context = (
             f"История чата ({period_context})" if period_context else "История чата"
         )
+        analysis_query = _build_analysis_query(query)
 
         messages = [
             {"role": "system", "content": config.PROCESSOR_PROMPT},
             {
                 "role": "user",
-                "content": f"{history_context}:\n\n{chat_history}\n\nЗапрос: {query}",
+                "content": (
+                    f"{history_context}:\n\n{chat_history}\n\n"
+                    f"Запрос: {analysis_query}"
+                ),
             },
         ]
 
@@ -2212,15 +2378,10 @@ async def process_chat_with_openai(
         def sync_rate_limit_notifier(candidate, wait_seconds: int, details: str) -> None:
             if rate_limit_notifier is None:
                 return
-            details_preview = (details or "").strip()
-            if len(details_preview) > 160:
-                details_preview = f"{details_preview[:157]}..."
             notice = (
-                f"⏳ Модель `{candidate.model}` временно ограничена (429).\n"
-                f"Жду {wait_seconds}с и повторяю запрос."
+                f"⏳ Модель `{candidate.model}` временно ограничена (429), "
+                f"повтор через {wait_seconds}с"
             )
-            if details_preview:
-                notice += f"\nПричина: {details_preview}"
             loop.call_soon_threadsafe(
                 asyncio.create_task, rate_limit_notifier(notice)
             )
@@ -2240,10 +2401,14 @@ async def process_chat_with_openai(
         )
         answer = llm_result.get("content", "")
         used_model = llm_result.get("model", "")
+        llm_stats = llm_result.get("stats") or {}
 
         answer = _cleanup_summary_text(answer)
         if used_model:
             answer = f"{answer}\n\nМодель: `{used_model}`"
+        stats_text = _format_llm_stats(llm_stats)
+        if stats_text:
+            answer = f"{answer}\n{stats_text}"
         return answer
 
     except Exception as e:
