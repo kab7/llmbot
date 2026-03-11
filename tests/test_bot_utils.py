@@ -216,11 +216,47 @@ def test_analyze_summary_quality_detects_artifacts_and_dates():
     assert issues
 
 
-def test_cleanup_summary_text_removes_attr_artifacts():
-    src = 'Текст,.attr(loading="lazy")\n\n\nЕщё строка'
+def test_analyze_summary_quality_detects_boilerplate():
+    history = "[2026-03-10 13:08:44] User: пример"
+    bad_summary = (
+        "## Суммаризация сообщения\n\n"
+        "Статус выполнения запроса:\n"
+        "- Отмечено как прочитанное: да\n"
+    )
+    score, issues = bot._analyze_summary_quality(bad_summary, history)
+    assert score > 0
+    assert any("служебные шаблоны" in issue for issue in issues)
+
+
+def test_cleanup_summary_text_removes_attr_artifacts_and_boilerplate():
+    src = (
+        '## Суммаризация сообщения\n\n'
+        '**Тема:** Как AI-кодинг-агенты формируют стек.\n'
+        'Текст,.attr(loading="lazy")\n\n'
+        '---\n'
+        'Статус выполнения запроса:\n'
+        '- Отмечено как прочитанное: да\n\n'
+        'Примечание: требуется техническая реализация.\n'
+    )
     cleaned = bot._cleanup_summary_text(src)
+    assert "Суммаризация сообщения" not in cleaned
+    assert "Тема:" not in cleaned
     assert ".attr(" not in cleaned
+    assert "Статус выполнения запроса" not in cleaned
+    assert "Примечание" not in cleaned
     assert "\n\n\n" not in cleaned
+
+
+def test_build_analysis_query_strips_schedule_and_mark_as_read():
+    query = (
+        "суммаризируй все непрочитанные чаты в папке AI, "
+        "отметь их как прочитанные и присылай мне саммари каждый день в 10:00"
+    )
+    cleaned = bot._build_analysis_query(query)
+    assert "отметь их как прочитанные" not in cleaned.lower()
+    assert "каждый день" not in cleaned.lower()
+    assert "10:00" not in cleaned
+    assert "суммаризируй все непрочитанные чаты в папке AI" in cleaned
 
 
 def test_compact_query_for_display():
