@@ -51,6 +51,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
         period_type="unread",
         period_value=None,
         query="суммаризируй",
+        requested_model="anthropic/claude-opus-4.6",
         mark_as_read=True,
         chat_id=123,
         schedule_spec={
@@ -70,6 +71,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
     save_schedules(file_path, [rec])
     loaded = load_schedules(file_path)
     assert loaded and loaded[0]["id"] == rec["id"]
+    assert loaded[0]["requested_model"] == "anthropic/claude-opus-4.6"
 
 
 def test_load_schedules_invalid_sqlite_returns_empty(tmp_path: Path):

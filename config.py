@@ -145,7 +145,7 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 Верни ТОЛЬКО один валидный JSON-объект, без markdown и без пояснений.
 Ответ должен быть валидным JSON.
 
-Верни РОВНО эти 9 ключей (без дополнительных):
+Верни РОВНО эти 10 ключей (без дополнительных):
 {
   "target_type": "chat" | "folder" | null,
   "target_name": string | null,
@@ -153,6 +153,7 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
   "period_value": integer | null,
   "mark_as_read": boolean,
   "query": string | null,
+  "requested_model": string | null,
   "recurrence_type": "daily" | "weekly" | "monthly" | "interval_days" | null,
   "interval_days": integer | null,
   "time": "HH:MM" | null
@@ -167,6 +168,11 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 4. query: исходный текст запроса пользователя целиком (как есть по смыслу; не сокращай до одного слова).
 5. mark_as_read=true, если есть явное намерение отметить прочитанным:
    "отметь/пометь как прочитанные", "mark as read", "read all", и т.п. Иначе false.
+6. requested_model:
+   - если пользователь явно просит использовать конкретную модель
+     ("с помощью anthropic/claude-opus-4.6", "используй модель ...", "using model ..."),
+     верни точный идентификатор модели строкой;
+   - иначе null.
 
 Период:
 1. Если явно есть "непрочитанные"/"unread", всегда period_type="unread", period_value=null.
@@ -192,7 +198,7 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 
 Самопроверка перед ответом:
 - JSON валиден;
-- есть все 9 ключей;
+- есть все 10 ключей;
 - типы значений соответствуют схеме;
 - никаких комментариев/текста вне JSON.
 
@@ -204,23 +210,27 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 Примеры:
 Пользователь: "суммаризируй все чаты в папке AI за вчера"
 Ответ:
-{"target_type":"folder","target_name":"AI","period_type":"days","period_value":1,"mark_as_read":false,"query":"суммаризируй все чаты в папке AI за вчера","recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"folder","target_name":"AI","period_type":"days","period_value":1,"mark_as_read":false,"query":"суммаризируй все чаты в папке AI за вчера","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "суммаризируй непрочитанные в чате Работа и отметь как прочитанные"
 Ответ:
-{"target_type":"chat","target_name":"Работа","period_type":"unread","period_value":null,"mark_as_read":true,"query":"суммаризируй непрочитанные в чате Работа и отметь как прочитанные","recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"chat","target_name":"Работа","period_type":"unread","period_value":null,"mark_as_read":true,"query":"суммаризируй непрочитанные в чате Работа и отметь как прочитанные","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "покажи последние 300 сообщений из чата Release"
 Ответ:
-{"target_type":"chat","target_name":"Release","period_type":"last_messages","period_value":300,"mark_as_read":false,"query":"покажи последние 300 сообщений из чата Release","recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"chat","target_name":"Release","period_type":"last_messages","period_value":300,"mark_as_read":false,"query":"покажи последние 300 сообщений из чата Release","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "суммаризируй чат DevOps каждый день в 20:00"
 Ответ:
-{"target_type":"chat","target_name":"DevOps","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй чат DevOps каждый день в 20:00","recurrence_type":"daily","interval_days":null,"time":"20:00"}
+{"target_type":"chat","target_name":"DevOps","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй чат DevOps каждый день в 20:00","requested_model":null,"recurrence_type":"daily","interval_days":null,"time":"20:00"}
 
 Пользователь: "суммаризируй папку AI раз в 3 дня в 19:30"
 Ответ:
-{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
+{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","requested_model":null,"recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
+
+Пользователь: "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+Ответ:
+{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6","requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}
 """
 
 PROCESSOR_PROMPT = """Ты - аналитик, который работает с историей Telegram чатов.

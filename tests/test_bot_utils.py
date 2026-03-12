@@ -80,6 +80,7 @@ def test_validate_command_payload_variants():
     assert normalized["period_value"] is None
     assert normalized["mark_as_read"] is False
     assert normalized["query"] == "summarize"
+    assert normalized["requested_model"] is None
 
     bad_target = payload | {"target_type": "invalid"}
     try:
@@ -148,11 +149,13 @@ def test_validate_command_payload_schedule_variants():
         "recurrence_type": "daily",
         "interval_days": None,
         "time": "20:00",
+        "requested_model": "anthropic/claude-opus-4.6",
     }
     normalized = bot.validate_command_payload(payload)
     assert normalized["recurrence_type"] == "daily"
     assert normalized["time"] == "20:00"
     assert normalized["time_missing"] is False
+    assert normalized["requested_model"] == "anthropic/claude-opus-4.6"
 
     interval_payload = payload | {
         "recurrence_type": "interval_days",
@@ -228,6 +231,17 @@ def test_analyze_summary_quality_detects_boilerplate():
     assert any("служебные шаблоны" in issue for issue in issues)
 
 
+def test_analyze_summary_quality_allows_common_tech_mixed_tokens():
+    history = "[2026-03-10 13:08:44] User: обсуждали AI-кодинг и LangFuse"
+    summary = (
+        "Обсуждали AI-кодинга, LLM-инструменты и доработки LangFuse-ом "
+        "для проверки агентного флоу."
+    )
+    score, issues = bot._analyze_summary_quality(summary, history)
+    assert score == 0
+    assert issues == []
+
+
 def test_cleanup_summary_text_removes_attr_artifacts_and_boilerplate():
     src = (
         '## Суммаризация сообщения\n\n'
@@ -247,6 +261,63 @@ def test_cleanup_summary_text_removes_attr_artifacts_and_boilerplate():
     assert "\n\n\n" not in cleaned
 
 
+def test_format_llm_stats_shows_rejected_separately():
+    text = bot._format_llm_stats(
+        {
+            "model/test": {
+                "requests": 3,
+                "rate_limits": 1,
+                "successes": 1,
+                "rejected": 1,
+                "errors": 1,
+            }
+        }
+    )
+    assert "LLM-статистика:" in text
+    assert "принято 1" in text
+    assert "отклонено 1" in text
+    assert "тех. ошибок 1" in text
+
+
+def test_merge_llm_stats_accumulates_across_chats():
+    merged = bot._merge_llm_stats(
+        {"model/a": {"requests": 1, "rate_limits": 0, "successes": 1, "rejected": 0, "errors": 0}},
+        {
+            "model/a": {"requests": 2, "rate_limits": 1, "successes": 0, "rejected": 1, "errors": 0},
+            "model/b": {"requests": 1, "rate_limits": 0, "successes": 1, "rejected": 0, "errors": 0},
+        },
+    )
+    assert merged["model/a"] == {
+        "requests": 3,
+        "rate_limits": 1,
+        "successes": 1,
+        "rejected": 1,
+        "errors": 0,
+    }
+    assert merged["model/b"]["requests"] == 1
+
+
+def test_format_operation_summary_includes_aggregate_stats():
+    text = bot._format_operation_summary(
+        total_chats=2,
+        processed_count=2,
+        skipped_count=1,
+        mark_as_read=True,
+        llm_stats={
+            "model/test": {
+                "requests": 3,
+                "rate_limits": 1,
+                "successes": 1,
+                "rejected": 1,
+                "errors": 1,
+            }
+        },
+    )
+    assert "Обработано чатов: 2 (пропущено: 1)" in text
+    assert "Сообщения отмечены как прочитанные" in text
+    assert "LLM-статистика:" in text
+
+
 def test_build_analysis_query_strips_schedule_and_mark_as_read():
     query = (
         "суммаризируй все непрочитанные чаты в папке AI, "
@@ -257,6 +328,14 @@ def test_build_analysis_query_strips_schedule_and_mark_as_read():
     assert "каждый день" not in cleaned.lower()
     assert "10:00" not in cleaned
     assert "суммаризируй все непрочитанные чаты в папке AI" in cleaned
+
+
+def test_build_analysis_query_strips_requested_model_clause():
+    query = "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+    cleaned = bot._build_analysis_query(query)
+    assert "claude-opus-4.6" not in cleaned
+    assert "с помощью" not in cleaned.lower()
+    assert cleaned == "суммаризируй папку AI"
 
 
 def test_compact_query_for_display():

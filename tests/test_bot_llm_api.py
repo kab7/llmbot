@@ -498,6 +498,53 @@ def test_call_llm_api_waits_before_next_free_model_in_same_scope(monkeypatch):
     assert sleeps == [11]
 
 
+def test_call_llm_api_sleeps_explicitly_between_free_models_after_429(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "free/model-a:free,free/model-b:free",
+            fallback_url="https://fallback.example/v1",
+            fallback_token="fallback-token-5678",
+            fallback_model="paid/model",
+        ),
+    )
+    bot._free_model_next_allowed_at.clear()
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
+    monkeypatch.setattr(bot, "_wait_for_free_model_slot", lambda candidate: None)
+    sleeps = []
+    seen_models = []
+
+    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if json["model"].endswith(":free"):
+            return DummyResponse(429, {"error": {"message": "ratelimit"}})
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok-paid"}}]})
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+
+    assert answer == "ok-paid"
+    assert seen_models == [
+        "free/model-a:free",
+        "free/model-b:free",
+        "free/model-a:free",
+        "free/model-b:free",
+        "free/model-a:free",
+        "free/model-b:free",
+        "paid/model",
+    ]
+    assert sleeps == [11, 11, 11, 11, 11]
+
+
 def test_call_llm_api_free_model_uses_growing_429_backoff(monkeypatch):
     _set_runtime_token(
         monkeypatch,
@@ -532,6 +579,49 @@ def test_call_llm_api_free_model_uses_growing_429_backoff(monkeypatch):
     assert answer == "ok"
     assert attempts["count"] == 4
     assert sleeps == [10, 13, 16]
+
+
+def test_call_llm_api_next_call_starts_from_primary_after_fallback(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "free/model-a:free,free/model-b:free",
+            fallback_url="https://fallback.example/v1",
+            fallback_token="fallback-token-5678",
+            fallback_model="paid/model",
+        ),
+    )
+    bot._free_model_next_allowed_at.clear()
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 1)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
+    seen_models = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if json["model"].endswith(":free"):
+            return DummyResponse(429, {"error": {"message": "ratelimit"}})
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok-paid"}}]})
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+
+    first = bot.call_llm_api([{"role": "user", "content": "first"}])
+    second = bot.call_llm_api([{"role": "user", "content": "second"}])
+
+    assert first == "ok-paid"
+    assert second == "ok-paid"
+    assert seen_models == [
+        "free/model-a:free",
+        "free/model-b:free",
+        "paid/model",
+        "free/model-a:free",
+        "free/model-b:free",
+        "paid/model",
+    ]
 
 
 def test_parse_command_with_gpt(monkeypatch):
@@ -597,6 +687,26 @@ def test_parse_command_with_gpt_schedule_fields(monkeypatch):
     assert missing_time["time_missing"] is True
 
 
+def test_parse_command_with_gpt_requested_model(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "call_llm_api",
+        lambda messages: (
+            "```json\n"
+            '{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,'
+            '"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6",'
+            '"requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}\n'
+            "```"
+        ),
+    )
+    result = asyncio.run(
+        bot.parse_command_with_gpt(
+            "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+        )
+    )
+    assert result["requested_model"] == "anthropic/claude-opus-4.6"
+
+
 def test_process_chat_with_openai(monkeypatch):
     captured = {}
 
@@ -605,6 +715,7 @@ def test_process_chat_with_openai(monkeypatch):
         candidates_override=None,
         rate_limit_callback=None,
         response_validator=None,
+        max_attempts_override=None,
     ):
         captured["messages"] = messages
         captured["override"] = candidates_override
@@ -613,7 +724,15 @@ def test_process_chat_with_openai(monkeypatch):
             "content": "summary",
             "model": "model/test",
             "url": "https://openrouter.ai/api/v1/chat/completions",
-            "stats": {"model/test": {"requests": 1, "rate_limits": 0, "successes": 1, "errors": 0}},
+            "stats": {
+                "model/test": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 1,
+                    "rejected": 0,
+                    "errors": 0,
+                }
+            },
         }
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
@@ -633,6 +752,7 @@ def test_process_chat_with_openai(monkeypatch):
         candidates_override=None,
         rate_limit_callback=None,
         response_validator=None,
+        max_attempts_override=None,
     ):
         raise Exception("boom")
 
@@ -651,6 +771,7 @@ def test_process_chat_with_openai_strips_operational_parts_from_summary_query(
         candidates_override=None,
         rate_limit_callback=None,
         response_validator=None,
+        max_attempts_override=None,
     ):
         captured["messages"] = messages
         return {
@@ -679,6 +800,81 @@ def test_process_chat_with_openai_strips_operational_parts_from_summary_query(
     assert "суммаризируй все непрочитанные чаты в папке ai" in payload.lower()
 
 
+def test_process_chat_with_openai_uses_requested_model_override(monkeypatch):
+    captured = {}
+
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+        max_attempts_override=None,
+    ):
+        captured["override"] = candidates_override
+        captured["max_attempts_override"] = max_attempts_override
+        return {
+            "content": "summary",
+            "model": "anthropic/claude-opus-4.6",
+            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "stats": {
+                "anthropic/claude-opus-4.6": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 1,
+                    "rejected": 0,
+                    "errors": 0,
+                }
+            },
+        }
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+
+    result = asyncio.run(
+        bot.process_chat_with_openai(
+            "chat history",
+            "суммаризируй папку AI",
+            "последние 1 день",
+            requested_model="anthropic/claude-opus-4.6",
+        )
+    )
+
+    assert "summary" in result
+    assert captured["max_attempts_override"] == 3
+    assert len(captured["override"]) == 1
+    assert captured["override"][0].model == "anthropic/claude-opus-4.6"
+
+
+def test_process_chat_with_openai_requested_model_failure_has_no_fallback(monkeypatch):
+    captured = {}
+
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+        max_attempts_override=None,
+    ):
+        captured["override"] = candidates_override
+        captured["max_attempts_override"] = max_attempts_override
+        raise Exception("429 upstream")
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+
+    result = asyncio.run(
+        bot.process_chat_with_openai(
+            "chat history",
+            "суммаризируй папку AI",
+            "последние 1 день",
+            requested_model="anthropic/claude-opus-4.6",
+        )
+    )
+
+    assert "anthropic/claude-opus-4.6" in result
+    assert "после 3 попыток" in result
+    assert captured["max_attempts_override"] == 3
+    assert len(captured["override"]) == 1
+
+
 def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     calls = []
 
@@ -700,6 +896,7 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
         candidates_override=None,
         rate_limit_callback=None,
         response_validator=None,
+        max_attempts_override=None,
     ):
         calls.append(candidates_override)
         assert response_validator is not None
@@ -710,8 +907,20 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
             "model": "fallback/model",
             "url": "https://fallback.example/v1/chat/completions",
             "stats": {
-                "primary/model": {"requests": 1, "rate_limits": 0, "successes": 0, "errors": 1},
-                "fallback/model": {"requests": 1, "rate_limits": 0, "successes": 1, "errors": 0},
+                "primary/model": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 0,
+                    "rejected": 1,
+                    "errors": 0,
+                },
+                "fallback/model": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 1,
+                    "rejected": 0,
+                    "errors": 0,
+                },
             },
         }
 
@@ -729,9 +938,11 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     assert "Нормальная краткая суммаризация" in result
     assert "Модель: `fallback/model`" in result
     assert "`primary/model`" in result
+    assert "отклонено 1" in result
+    assert "тех. ошибок 0" in result
 
 
-def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
+def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch):
     notifications = []
 
     async def notifier(message_text: str):
@@ -742,10 +953,9 @@ def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
         candidates_override=None,
         rate_limit_callback=None,
         response_validator=None,
+        max_attempts_override=None,
     ):
-        candidate = SimpleNamespace(model="meta-llama/llama-3.3-70b-instruct:free")
-        assert rate_limit_callback is not None
-        rate_limit_callback(candidate, 12, "temporarily rate-limited upstream")
+        assert rate_limit_callback is None
         return {
             "content": "summary",
             "model": "meta-llama/llama-3.3-70b-instruct:free",
@@ -755,6 +965,7 @@ def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
                     "requests": 1,
                     "rate_limits": 0,
                     "successes": 1,
+                    "rejected": 0,
                     "errors": 0,
                 }
             },
@@ -772,11 +983,7 @@ def test_process_chat_with_openai_notifies_about_429_backoff(monkeypatch):
     )
 
     assert "summary" in result
-    assert notifications
-    assert notifications[0] == (
-        "⏳ Модель `meta-llama/llama-3.3-70b-instruct:free` "
-        "временно ограничена (429), повтор через 12с"
-    )
+    assert notifications == []
 
 
 def test_get_chat_history_empty_returns_empty_string(monkeypatch):
@@ -892,10 +1099,10 @@ def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
         return "history", 101
 
     async def fake_process(
-        chat_history, query, period_text, rate_limit_notifier=None
+        chat_history, query, period_text, rate_limit_notifier=None, requested_model=None
     ):
         calls["period_text"] = period_text
-        return "summary"
+        return {"answer": "summary", "stats": {}}
 
     async def fake_mark_read(chat_entity):
         calls["marked"] = True
@@ -919,7 +1126,7 @@ def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
     )()
 
     monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
-    monkeypatch.setattr(bot, "process_chat_with_openai", fake_process)
+    monkeypatch.setattr(bot, "_process_chat_with_openai_result", fake_process)
     monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
 
     success = asyncio.run(
@@ -959,10 +1166,10 @@ def test_process_single_chat_unread_mode_uses_unread_history(monkeypatch):
         return "[2023-09-22 10:00:00] User: stale old", 1
 
     async def fake_process(
-        chat_history, query, period_text, rate_limit_notifier=None
+        chat_history, query, period_text, rate_limit_notifier=None, requested_model=None
     ):
         calls["history"] = chat_history
-        return "summary"
+        return {"answer": "summary", "stats": {}}
 
     class DummyProcessing:
         async def edit_text(self, text):
@@ -982,7 +1189,7 @@ def test_process_single_chat_unread_mode_uses_unread_history(monkeypatch):
     )()
 
     monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
-    monkeypatch.setattr(bot, "process_chat_with_openai", fake_process)
+    monkeypatch.setattr(bot, "_process_chat_with_openai_result", fake_process)
     async def fake_mark_read(chat_entity):
         return True
 

@@ -24,6 +24,7 @@ _SCHEDULE_COLUMNS = [
     "period_type",
     "period_value",
     "query",
+    "requested_model",
     "mark_as_read",
     "recurrence_type",
     "time",
@@ -53,6 +54,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             period_type TEXT,
             period_value INTEGER,
             query TEXT NOT NULL,
+            requested_model TEXT,
             mark_as_read INTEGER NOT NULL,
             recurrence_type TEXT NOT NULL,
             time TEXT NOT NULL,
@@ -62,6 +64,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    existing_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(schedules)").fetchall()
+    }
+    if "requested_model" not in existing_columns:
+        conn.execute("ALTER TABLE schedules ADD COLUMN requested_model TEXT")
 
 
 def _row_to_schedule(row: sqlite3.Row) -> dict[str, Any]:
@@ -163,6 +170,7 @@ def build_schedule_record(
     period_type: Optional[str],
     period_value: Optional[int],
     query: str,
+    requested_model: Optional[str],
     mark_as_read: bool,
     chat_id: int,
     schedule_spec: dict[str, Any],
@@ -180,6 +188,7 @@ def build_schedule_record(
         "period_type": period_type,
         "period_value": period_value,
         "query": query,
+        "requested_model": requested_model,
         "mark_as_read": bool(mark_as_read),
         "recurrence_type": schedule_spec["recurrence_type"],
         "time": schedule_spec["time"],
@@ -219,6 +228,7 @@ def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
                 schedule.get("period_type"),
                 schedule.get("period_value"),
                 schedule.get("query") or "",
+                schedule.get("requested_model"),
                 1 if schedule.get("mark_as_read") else 0,
                 schedule.get("recurrence_type"),
                 schedule.get("time"),
@@ -245,13 +255,14 @@ def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
                     period_type,
                     period_value,
                     query,
+                    requested_model,
                     mark_as_read,
                     recurrence_type,
                     time,
                     interval_days,
                     weekday,
                     day_of_month
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

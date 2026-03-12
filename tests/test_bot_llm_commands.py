@@ -6,18 +6,33 @@ from llm_runtime import LLMRuntimeConfig
 
 
 class DummyMessage:
-    def __init__(self):
+    def __init__(self, text=""):
         self.replies = []
+        self.text = text
 
     async def reply_text(self, text, parse_mode=None):
         self.replies.append((text, parse_mode))
+        return DummyProcessingMessage(self.replies)
+
+
+class DummyProcessingMessage:
+    def __init__(self, replies):
+        self.replies = replies
+        self.edits = []
+
+    async def edit_text(self, text, parse_mode=None):
+        self.edits.append((text, parse_mode))
         return self
+
+    async def delete(self):
+        return None
 
 
 class DummyUpdate:
-    def __init__(self, user_id):
+    def __init__(self, user_id, text=""):
         self.effective_user = SimpleNamespace(id=user_id)
-        self.message = DummyMessage()
+        self.message = DummyMessage(text=text)
+        self.effective_chat = SimpleNamespace(id=42)
 
 
 class DummyContext:
@@ -54,7 +69,10 @@ def _reset_runtime(monkeypatch, env_path):
 def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     _reset_runtime(monkeypatch, env_path)
-    update = DummyUpdate(user_id=1)
+    update = DummyUpdate(
+        user_id=1,
+        text="суммаризируй непрочитанные в папке AI и отметь как прочитанные",
+    )
 
     asyncio.run(bot.seturl_command(update, DummyContext(["https://example.com/v1"])))
     asyncio.run(
@@ -186,3 +204,180 @@ def test_schedules_command_includes_query(monkeypatch, tmp_path):
     assert "Запрос:" in text
     assert "суммаризируй все чаты в папке AI за вчера" in text
     assert "Отмечать как прочитанные: да" in text
+
+
+def test_process_user_message_shows_recognized_command(monkeypatch, tmp_path):
+    _reset_runtime(monkeypatch, tmp_path / ".env")
+    update = DummyUpdate(
+        user_id=1,
+        text="суммаризируй непрочитанные в папке AI и отметь как прочитанные",
+    )
+    bot.current_context.clear()
+
+    async def fake_parse_command(_user_message):
+        return {
+            "target_type": "folder",
+            "target_name": "AI",
+            "period_type": "unread",
+            "period_value": None,
+            "mark_as_read": True,
+            "query": "суммаризируй непрочитанные в папке AI и отметь как прочитанные",
+            "recurrence_type": None,
+            "interval_days": None,
+            "time": None,
+        }
+
+    async def fake_resolve_folder(target_name, processing_msg):
+        return [(object(), "Chat One", 2, None)], target_name, None
+
+    async def fake_process_single_chat(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(bot, "parse_command_with_gpt", fake_parse_command)
+    monkeypatch.setattr(bot, "_resolve_folder_chats", fake_resolve_folder)
+    monkeypatch.setattr(bot, "_process_single_chat", fake_process_single_chat)
+
+    asyncio.run(bot.process_user_message(update, DummyContext()))
+
+    reply_texts = [text for text, _ in update.message.replies]
+    recognized = next(text for text in reply_texts if text.startswith("🧭 Распознано:"))
+    assert "Цель: folder 'AI'" in recognized
+    assert "Источник цели: запрос" in recognized
+    assert "Период: непрочитанные сообщения" in recognized
+    assert "Источник периода: запрос" in recognized
+    assert "Отметить как прочитанные: да" in recognized
+    assert "Расписание: нет" in recognized
+
+
+def test_process_user_message_aggregates_llm_stats_for_folder(monkeypatch, tmp_path):
+    _reset_runtime(monkeypatch, tmp_path / ".env")
+    update = DummyUpdate(user_id=1, text="суммаризируй папку AI")
+    bot.current_context.clear()
+
+    async def fake_parse_command(_user_message):
+        return {
+            "target_type": "folder",
+            "target_name": "AI",
+            "period_type": "days",
+            "period_value": 1,
+            "mark_as_read": False,
+            "query": "суммаризируй папку AI",
+            "recurrence_type": None,
+            "interval_days": None,
+            "time": None,
+        }
+
+    async def fake_resolve_folder(target_name, processing_msg):
+        return [(object(), "Chat One"), (object(), "Chat Two")], target_name, None
+
+    async def fake_process_single_chat(
+        update_obj,
+        processing_msg,
+        chat_entity,
+        chat_name,
+        idx,
+        total,
+        period_type,
+        period_value,
+        query,
+        mark_as_read,
+        requested_model=None,
+        unread_count=None,
+        read_inbox_max_id=None,
+        llm_stats_accumulator=None,
+    ):
+        await update_obj.message.reply_text(f"summary for {chat_name}")
+        bot._merge_llm_stats(
+            llm_stats_accumulator,
+            {
+                "model/test": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 1,
+                    "rejected": 0,
+                    "errors": 0,
+                }
+            },
+        )
+        return True
+
+    monkeypatch.setattr(bot, "parse_command_with_gpt", fake_parse_command)
+    monkeypatch.setattr(bot, "_resolve_folder_chats", fake_resolve_folder)
+    monkeypatch.setattr(bot, "_process_single_chat", fake_process_single_chat)
+
+    asyncio.run(bot.process_user_message(update, DummyContext()))
+
+    reply_texts = [text for text, _ in update.message.replies]
+    operation_summary = reply_texts[-1]
+    assert operation_summary.startswith("✅ Обработано чатов: 2")
+    assert "LLM-статистика:" in operation_summary
+    assert "запросов 2" in operation_summary
+    assert not any(
+        "LLM-статистика:" in text for text in reply_texts[:-1] if "summary for" in text
+    )
+
+
+def test_process_user_message_shows_operation_stats_for_single_chat(
+    monkeypatch, tmp_path
+):
+    _reset_runtime(monkeypatch, tmp_path / ".env")
+    update = DummyUpdate(user_id=1, text="суммаризируй чат Work")
+    bot.current_context.clear()
+
+    async def fake_parse_command(_user_message):
+        return {
+            "target_type": "chat",
+            "target_name": "Work",
+            "period_type": "days",
+            "period_value": 1,
+            "mark_as_read": False,
+            "query": "суммаризируй чат Work",
+            "recurrence_type": None,
+            "interval_days": None,
+            "time": None,
+        }
+
+    async def fake_resolve_single(target_name, processing_msg):
+        return [(object(), "Work")], target_name, None
+
+    async def fake_process_single_chat(
+        update_obj,
+        processing_msg,
+        chat_entity,
+        chat_name,
+        idx,
+        total,
+        period_type,
+        period_value,
+        query,
+        mark_as_read,
+        requested_model=None,
+        unread_count=None,
+        read_inbox_max_id=None,
+        llm_stats_accumulator=None,
+    ):
+        await update_obj.message.reply_text(f"summary for {chat_name}")
+        bot._merge_llm_stats(
+            llm_stats_accumulator,
+            {
+                "model/test": {
+                    "requests": 1,
+                    "rate_limits": 0,
+                    "successes": 1,
+                    "rejected": 0,
+                    "errors": 0,
+                }
+            },
+        )
+        return True
+
+    monkeypatch.setattr(bot, "parse_command_with_gpt", fake_parse_command)
+    monkeypatch.setattr(bot, "_resolve_single_chat", fake_resolve_single)
+    monkeypatch.setattr(bot, "_process_single_chat", fake_process_single_chat)
+
+    asyncio.run(bot.process_user_message(update, DummyContext()))
+
+    reply_texts = [text for text, _ in update.message.replies]
+    assert "summary for Work" in reply_texts
+    assert reply_texts[-1].startswith("LLM-статистика:")
+    assert "запросов 1" in reply_texts[-1]

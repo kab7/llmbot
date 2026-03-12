@@ -31,7 +31,7 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 import config
-from llm_runtime import LLMRuntimeConfig
+from llm_runtime import LLMRuntimeConfig, LLMSettings
 from schedule_runtime import (
     build_schedule_record,
     compute_next_run,
@@ -499,6 +499,17 @@ def _apply_free_model_429_backoff(candidate, attempt: int) -> int:
     return wait_seconds
 
 
+def _has_pending_free_attempts(
+    scope_candidates: list, candidate_idx: int, attempt: int, max_attempts: int
+) -> bool:
+    remaining_in_round = scope_candidates[candidate_idx:]
+    if any(_is_free_model_name(candidate.model) for candidate in remaining_in_round):
+        return True
+    return attempt < max_attempts and any(
+        _is_free_model_name(candidate.model) for candidate in scope_candidates
+    )
+
+
 def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
     allowed: set[str] = set()
     for raw_date in re.findall(r"\b(20\d{2})-(\d{2})-(\d{2})\b", chat_history or ""):
@@ -517,10 +528,17 @@ def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
 def _count_mixed_script_tokens(text: str) -> int:
     count = 0
     for token in re.findall(r"\b[\w.-]{5,}\b", text or ""):
-        has_cyr = bool(re.search(r"[А-Яа-яЁё]", token))
-        has_lat = bool(re.search(r"[A-Za-z]", token))
-        if has_cyr and has_lat:
-            count += 1
+        lat_groups = re.findall(r"[A-Za-z]+", token)
+        cyr_groups = re.findall(r"[А-Яа-яЁё]+", token)
+        if not lat_groups or not cyr_groups:
+            continue
+        latin_chars = sum(len(group) for group in lat_groups)
+        cyr_chars = sum(len(group) for group in cyr_groups)
+        # Common technical compounds like AI-кодинг or LangFuse-ом are normal
+        # for Telegram tech chats and should not be treated as corruption.
+        if latin_chars <= 4 or cyr_chars <= 3:
+            continue
+        count += 1
     return count
 
 
@@ -542,7 +560,7 @@ def _analyze_summary_quality(
         score += unexpected_script_hits
 
     mixed_script_tokens = _count_mixed_script_tokens(text)
-    if mixed_script_tokens >= 2:
+    if mixed_script_tokens >= 3:
         issues.append("обнаружены смешанные кириллическо-латинские токены")
         score += mixed_script_tokens
 
@@ -655,10 +673,35 @@ def _build_analysis_query(query: Optional[str]) -> str:
         "",
         cleaned,
     )
+    cleaned = re.sub(
+        r"(?i)(?:,?\s*(?:и\s+)?)?(?:с\s+помощью|используй(?:\s+модель)?|using\s+model)\s+"
+        r"[\w./:-]+",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
     if cleaned:
         return cleaned
     return "Сделай краткое саммари переписки по делу."
+
+
+def _build_requested_model_candidates(model_name: str) -> list[LLMSettings]:
+    normalized_model = (model_name or "").strip()
+    if not normalized_model:
+        raise ValueError("Название модели не указано")
+    primary = llm_runtime.get_settings()
+    fallback = llm_runtime.get_fallback_settings()
+    base = primary if primary.token else fallback
+    if not base.token:
+        raise ValueError("Нет токена для выполнения запроса с указанной моделью")
+    return [
+        LLMSettings(
+            url=base.url,
+            token=base.token,
+            model=normalized_model,
+            scope="primary",
+        )
+    ]
 
 
 def _compact_query_for_display(query: Optional[str], max_length: int = 160) -> str:
@@ -678,12 +721,107 @@ def _format_llm_stats(stats: Optional[dict[str, dict[str, int]]]) -> str:
         requests_count = int(counters.get("requests", 0))
         rate_limits = int(counters.get("rate_limits", 0))
         successes = int(counters.get("successes", 0))
+        rejected = int(counters.get("rejected", 0))
         errors = int(counters.get("errors", 0))
         lines.append(
             f"- `{model}`: запросов {requests_count}, 429 {rate_limits}, "
-            f"успешно {successes}, ошибок {errors}"
+            f"принято {successes}, отклонено {rejected}, тех. ошибок {errors}"
         )
     return "\n".join(lines)
+
+
+def _merge_llm_stats(
+    total_stats: Optional[dict[str, dict[str, int]]],
+    new_stats: Optional[dict[str, dict[str, int]]],
+) -> dict[str, dict[str, int]]:
+    merged = total_stats if total_stats is not None else {}
+    for model, counters in (new_stats or {}).items():
+        bucket = merged.setdefault(
+            model,
+            {
+                "requests": 0,
+                "rate_limits": 0,
+                "successes": 0,
+                "rejected": 0,
+                "errors": 0,
+            },
+        )
+        for key in ("requests", "rate_limits", "successes", "rejected", "errors"):
+            bucket[key] += int(counters.get(key, 0))
+    return merged
+
+
+def _format_operation_summary(
+    *,
+    total_chats: int,
+    processed_count: int,
+    skipped_count: int,
+    mark_as_read: bool,
+    llm_stats: Optional[dict[str, dict[str, int]]],
+) -> str:
+    lines: list[str] = []
+    if total_chats > 1:
+        summary = f"✅ Обработано чатов: {processed_count}"
+        if skipped_count > 0:
+            summary += f" (пропущено: {skipped_count})"
+        lines.append(summary)
+        if mark_as_read and processed_count > 0:
+            lines.append("📖 Сообщения отмечены как прочитанные")
+    elif mark_as_read and processed_count > 0:
+        lines.append("📖 Сообщения отмечены как прочитанные")
+
+    stats_text = _format_llm_stats(llm_stats)
+    if stats_text:
+        lines.append(stats_text)
+    return "\n".join(lines).strip()
+
+
+def _format_recognized_command(
+    *,
+    target_type: str,
+    target_name: str,
+    period_type: Optional[str],
+    period_value: Optional[int],
+    query: Optional[str],
+    requested_model: Optional[str],
+    mark_as_read: bool,
+    recurrence_type: Optional[str],
+    interval_days: Optional[int],
+    schedule_time: Optional[str],
+    target_from_context: bool,
+    period_from_context: bool,
+) -> str:
+    if period_type is None:
+        period_text = f"последние {config.DEFAULT_MESSAGES_LIMIT} сообщений"
+        period_source = "по умолчанию"
+    else:
+        period_text = format_period_text(period_type, period_value)
+        period_source = "контекст" if period_from_context else "запрос"
+
+    target_source = "контекст" if target_from_context else "запрос"
+    schedule_text = "нет"
+    if recurrence_type:
+        schedule_text = recurrence_to_text(
+            {
+                "recurrence_type": recurrence_type,
+                "interval_days": interval_days,
+                "time": schedule_time,
+                "day_of_month": None,
+            }
+        )
+
+    analysis_query = _compact_query_for_display(_build_analysis_query(query), 220)
+    return (
+        "🧭 Распознано:\n"
+        f"• Цель: {target_type} '{target_name}'\n"
+        f"• Источник цели: {target_source}\n"
+        f"• Период: {period_text}\n"
+        f"• Источник периода: {period_source}\n"
+        f"• Аналитический запрос: {analysis_query}\n"
+        f"• Модель: {requested_model or 'по конфигу'}\n"
+        f"• Отметить как прочитанные: {'да' if mark_as_read else 'нет'}\n"
+        f"• Расписание: {schedule_text}"
+    )
 
 
 def _split_text_chunks(text: str, max_length: int = 3900) -> list[str]:
@@ -734,6 +872,7 @@ def _call_llm_api_internal(
     candidates_override: Optional[list] = None,
     rate_limit_callback: Optional[Any] = None,
     response_validator: Optional[Any] = None,
+    max_attempts_override: Optional[int] = None,
 ) -> Dict[str, str]:
     """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
     try:
@@ -790,7 +929,7 @@ def _call_llm_api_internal(
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f"  Messages count: {len(messages)}")
 
-        max_attempts = config.LLM_MAX_RETRIES
+        max_attempts = max(1, int(max_attempts_override or config.LLM_MAX_RETRIES))
         last_error = None
         last_status_code = None
         last_error_details = ""
@@ -826,7 +965,13 @@ def _call_llm_api_internal(
                 for candidate_idx, candidate in enumerate(scope_candidates, start=1):
                     model_stats = stats.setdefault(
                         candidate.model,
-                        {"requests": 0, "rate_limits": 0, "successes": 0, "errors": 0},
+                        {
+                            "requests": 0,
+                            "rate_limits": 0,
+                            "successes": 0,
+                            "rejected": 0,
+                            "errors": 0,
+                        },
                     )
                     model_stats["requests"] += 1
                     payload = {
@@ -921,6 +1066,17 @@ def _call_llm_api_internal(
                             candidate.model,
                             details,
                         )
+                        if _is_free_model_name(candidate.model) and wait_seconds > 0:
+                            should_sleep_now = _has_pending_free_attempts(
+                                scope_candidates, candidate_idx, attempt, max_attempts
+                            )
+                            if should_sleep_now:
+                                logger.warning(
+                                    "⏳ Free-модель '%s' получила 429, жду %ss перед следующей free-попыткой",
+                                    candidate.model,
+                                    wait_seconds,
+                                )
+                                time.sleep(wait_seconds)
                         if candidate_idx < len(scope_candidates):
                             logger.warning(
                                 "↪️ После 429 на '%s' пробую следующую модель '%s'",
@@ -1005,7 +1161,7 @@ def _call_llm_api_internal(
                     if response_validator is not None:
                         rejection_reason = response_validator(content, candidate)
                         if rejection_reason:
-                            model_stats["errors"] += 1
+                            model_stats["rejected"] += 1
                             last_error = Exception(rejection_reason)
                             logger.warning(
                                 "⚠️ Ответ модели '%s' отклонен валидатором: %s",
@@ -1106,10 +1262,15 @@ def call_llm_api_with_meta(
     candidates_override: Optional[list] = None,
     rate_limit_callback: Optional[Any] = None,
     response_validator: Optional[Any] = None,
+    max_attempts_override: Optional[int] = None,
 ) -> Dict[str, str]:
     """Вызов LLM API и возврат текста вместе с моделью/URL."""
     return _call_llm_api_internal(
-        messages, candidates_override, rate_limit_callback, response_validator
+        messages,
+        candidates_override,
+        rate_limit_callback,
+        response_validator,
+        max_attempts_override,
     )
 
 
@@ -1180,6 +1341,7 @@ async def parse_command_with_gpt(user_message: str) -> Dict[str, Any]:
             "period_value": число дней/часов/сообщений | null,
             "mark_as_read": true | false,
             "query": "полный текст запроса пользователя",
+            "requested_model": "anthropic/claude-opus-4.6" | null,
             "recurrence_type": "daily" | "weekly" | "monthly" | "interval_days" | null,
             "interval_days": число | null,
             "time": "HH:MM" | null
@@ -1247,6 +1409,12 @@ def validate_command_payload(command: dict) -> Dict[str, Any]:
             raise ValueError("query должен быть строкой или null")
         query = query.strip() or None
 
+    requested_model = command.get("requested_model")
+    if requested_model is not None:
+        if not isinstance(requested_model, str):
+            raise ValueError("requested_model должен быть строкой или null")
+        requested_model = requested_model.strip() or None
+
     recurrence_type = command.get("recurrence_type")
     allowed_recurrence = {"daily", "weekly", "monthly", "interval_days", None}
     if recurrence_type not in allowed_recurrence:
@@ -1285,6 +1453,7 @@ def validate_command_payload(command: dict) -> Dict[str, Any]:
         "period_value": period_value,
         "mark_as_read": mark_as_read,
         "query": query,
+        "requested_model": requested_model,
         "recurrence_type": recurrence_type,
         "interval_days": interval_days,
         "time": time_value,
@@ -1529,7 +1698,9 @@ class _SilentProcessingMessage:
         return None
 
 
-async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
+async def _execute_scheduled_summary(
+    record: dict,
+) -> tuple[int, int, dict[str, dict[str, int]]]:
     if application_ref is None:
         raise RuntimeError("Application reference is not initialized")
 
@@ -1546,6 +1717,7 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
     period_type = record.get("period_type")
     period_value = record.get("period_value")
     query = record.get("query") or "Суммаризируй"
+    requested_model = record.get("requested_model")
     mark_as_read = bool(record.get("mark_as_read"))
 
     if target_type == "folder":
@@ -1562,6 +1734,7 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
     processed_count = 0
     skipped_count = 0
     total = len(chats_to_process)
+    llm_operation_stats: dict[str, dict[str, int]] = {}
 
     for idx, chat_data in enumerate(chats_to_process, 1):
         if len(chat_data) == 4:
@@ -1585,8 +1758,10 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
                 period_value,
                 query,
                 mark_as_read,
+                requested_model,
                 unread_count,
                 read_inbox_max_id,
+                llm_operation_stats,
             )
             if success:
                 processed_count += 1
@@ -1598,7 +1773,7 @@ async def _execute_scheduled_summary(record: dict) -> tuple[int, int]:
             )
             skipped_count += 1
 
-    return processed_count, skipped_count
+    return processed_count, skipped_count, llm_operation_stats
 
 
 def _schedule_next_job(record: dict) -> None:
@@ -1637,13 +1812,19 @@ async def run_scheduled_summary_job(schedule_id: str) -> None:
     now = datetime.now().astimezone()
     run_success = False
     try:
-        processed_count, skipped_count = await _execute_scheduled_summary(record)
-        summary = (
-            f"✅ Периодическая суммаризация '{schedule_id}' завершена.\n"
-            f"Обработано: {processed_count}"
+        processed_count, skipped_count, llm_stats = await _execute_scheduled_summary(
+            record
         )
+        lines = [
+            f"✅ Периодическая суммаризация '{schedule_id}' завершена.",
+            f"Обработано: {processed_count}",
+        ]
         if skipped_count:
-            summary += f"\nПропущено: {skipped_count}"
+            lines.append(f"Пропущено: {skipped_count}")
+        stats_text = _format_llm_stats(llm_stats)
+        if stats_text:
+            lines.append(stats_text)
+        summary = "\n".join(lines)
         await application_ref.bot.send_message(chat_id=chat_id, text=summary)
         run_success = True
     except Exception as e:
@@ -2338,12 +2519,13 @@ async def get_chat_history(
         raise _handle_telegram_error(e, "получении истории чата")
 
 
-async def process_chat_with_openai(
+async def _process_chat_with_openai_result(
     chat_history: str,
     query: str,
     period_context: str = None,
     rate_limit_notifier: Optional[Any] = None,
-) -> str:
+    requested_model: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Обрабатывает историю чата согласно запросу пользователя
 
@@ -2353,7 +2535,7 @@ async def process_chat_with_openai(
         period_context: Контекст периода ("за неделю", "за последний час" и т.д.)
 
     Returns:
-        Ответ от LLM
+        {"answer": <text>, "stats": <dict>}
     """
     try:
         # Формируем контекст для LLM
@@ -2373,31 +2555,25 @@ async def process_chat_with_openai(
             },
         ]
 
-        loop = asyncio.get_running_loop()
-
-        def sync_rate_limit_notifier(candidate, wait_seconds: int, details: str) -> None:
-            if rate_limit_notifier is None:
-                return
-            notice = (
-                f"⏳ Модель `{candidate.model}` временно ограничена (429), "
-                f"повтор через {wait_seconds}с"
-            )
-            loop.call_soon_threadsafe(
-                asyncio.create_task, rate_limit_notifier(notice)
-            )
-
         def summary_validator(content: str, candidate) -> Optional[str]:
             score, issues = _analyze_summary_quality(content, chat_history)
             if score <= 0:
                 return None
             return "; ".join(issues) or "подозрительное качество саммари"
 
+        candidates_override = None
+        max_attempts_override = None
+        if requested_model:
+            candidates_override = _build_requested_model_candidates(requested_model)
+            max_attempts_override = 3
+
         llm_result = await asyncio.to_thread(
             call_llm_api_with_meta,
             messages,
+            candidates_override,
             None,
-            sync_rate_limit_notifier,
             summary_validator,
+            max_attempts_override,
         )
         answer = llm_result.get("content", "")
         used_model = llm_result.get("model", "")
@@ -2406,15 +2582,39 @@ async def process_chat_with_openai(
         answer = _cleanup_summary_text(answer)
         if used_model:
             answer = f"{answer}\n\nМодель: `{used_model}`"
-        stats_text = _format_llm_stats(llm_stats)
-        if stats_text:
-            answer = f"{answer}\n{stats_text}"
-        return answer
+        return {"answer": answer, "stats": llm_stats}
 
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Ошибка при обработке запроса с LLM: {error_msg}")
-        return f"❌ {error_msg}"
+        if requested_model:
+            return {
+                "answer": (
+                    f"❌ Не удалось выполнить запрос с моделью "
+                    f"`{requested_model}` после 3 попыток: {error_msg}"
+                ),
+                "stats": {},
+            }
+        return {"answer": f"❌ {error_msg}", "stats": {}}
+
+
+async def process_chat_with_openai(
+    chat_history: str,
+    query: str,
+    period_context: str = None,
+    rate_limit_notifier: Optional[Any] = None,
+    include_stats: bool = True,
+    requested_model: Optional[str] = None,
+) -> str:
+    result = await _process_chat_with_openai_result(
+        chat_history, query, period_context, rate_limit_notifier, requested_model
+    )
+    answer = result.get("answer", "")
+    if include_stats:
+        stats_text = _format_llm_stats(result.get("stats"))
+        if stats_text:
+            answer = f"{answer}\n{stats_text}"
+    return answer
 
 
 def split_markdown_chunks(text: str, max_length: int) -> list[str]:
@@ -2857,6 +3057,7 @@ async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  Цель: {rec.get('target_type')} '{rec.get('target_name')}'\n"
             f"  Период: {period_text}\n"
             f"  Запрос: {_compact_query_for_display(rec.get('query'))}\n"
+            f"  Модель: {rec.get('requested_model') or 'по конфигу'}\n"
             f"  Отмечать как прочитанные: {mark_text}\n"
             f"  Расписание: {recurrence_to_text(rec)}\n"
             f"  recurrence_type: {rec.get('recurrence_type')}\n"
@@ -3082,8 +3283,10 @@ async def _process_single_chat(
     period_value,
     query: str,
     mark_as_read: bool,
+    requested_model: Optional[str] = None,
     unread_count: Optional[int] = None,
     read_inbox_max_id: Optional[int] = None,
+    llm_stats_accumulator: Optional[dict[str, dict[str, int]]] = None,
 ) -> bool:
     """
     Обрабатывает один чат и отправляет результат
@@ -3148,18 +3351,14 @@ async def _process_single_chat(
     else:
         await processing_msg.edit_text("Анализирую переписку с помощью AI... 💭")
 
-    async def notify_rate_limit(message_text: str) -> None:
-        if isinstance(processing_msg, _SilentProcessingMessage):
-            await update.message.reply_text(message_text)
-        else:
-            await processing_msg.edit_text(message_text)
-
-    result = await process_chat_with_openai(
+    llm_result = await _process_chat_with_openai_result(
         chat_history,
         query,
         period_text,
-        rate_limit_notifier=notify_rate_limit,
+        requested_model=requested_model,
     )
+    result = llm_result.get("answer", "")
+    _merge_llm_stats(llm_stats_accumulator, llm_result.get("stats"))
 
     # Генерируем ссылку на чат (ведет на первое суммаризированное сообщение)
     chat_link = generate_channel_link(chat_entity, message_id=first_message_id)
@@ -3255,6 +3454,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             "mark_as_read", False
         )  # Отмечать ли сообщения прочитанными
         query = command.get("query") or user_message
+        requested_model = command.get("requested_model")
         recurrence_type = command.get("recurrence_type")
         interval_days = command.get("interval_days")
         schedule_time = command.get("time")
@@ -3282,10 +3482,12 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         # Если цель не указана, используем из контекста
+        target_from_context = False
         if not target_name:
             if current_context.get("target_name"):
                 target_name = current_context["target_name"]
                 target_type = current_context.get("target_type", "chat")
+                target_from_context = True
                 logger.info(f"Используем из контекста: {target_type} '{target_name}'")
             else:
                 await processing_msg.edit_text(
@@ -3298,6 +3500,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             target_type = "chat"
 
         # Определяем итоговый период (с учетом контекста и unread-эвристики)
+        parsed_period_type = period_type
         period_type, period_value = resolve_period_with_context(
             period_type,
             period_value,
@@ -3305,12 +3508,35 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             query,
             current_context,
         )
+        period_from_context = (
+            parsed_period_type is None
+            and period_type is not None
+            and current_context.get("period_type") == period_type
+            and current_context.get("period_value") == period_value
+        )
         if period_type:
             logger.info(f"Итоговый период: {period_type}={period_value}")
 
         # Логируем, если нужно отмечать прочитанным
         if mark_as_read:
             logger.info("📖 Будут отмечены сообщения как прочитанные после обработки")
+
+        await update.message.reply_text(
+            _format_recognized_command(
+                target_type=target_type,
+                target_name=target_name,
+                period_type=period_type,
+                period_value=period_value,
+                query=query,
+                requested_model=requested_model,
+                mark_as_read=mark_as_read,
+                recurrence_type=recurrence_type,
+                interval_days=interval_days,
+                schedule_time=schedule_time,
+                target_from_context=target_from_context,
+                period_from_context=period_from_context,
+            )
+        )
 
         # Шаг 3: При наличии периодичности создаем расписание вместо немедленного запуска
         if schedule_intent and recurrence_type is None:
@@ -3344,6 +3570,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                     period_type=period_type,
                     period_value=period_value,
                     query=query,
+                    requested_model=requested_model,
                     mark_as_read=mark_as_read,
                     chat_id=update.effective_chat.id,
                     schedule_spec=schedule_spec,
@@ -3367,6 +3594,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"ID: {schedule_record['id']}\n"
                 f"Цель: {target_type} '{target_name}'\n"
                 f"Период суммаризации: {format_period_text(period_type, period_value)}\n"
+                f"Модель: {requested_model or 'по конфигу'}\n"
                 f"Расписание: {recurrence_to_text(schedule_record)}\n"
                 f"Следующий запуск: {next_run_text}\n\n"
                 "Управление:\n"
@@ -3399,6 +3627,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         processed_count = 0
         skipped_count = 0
         total = len(chats_to_process)
+        llm_operation_stats: dict[str, dict[str, int]] = {}
 
         for idx, chat_data in enumerate(chats_to_process, 1):
             if len(chat_data) == 4:
@@ -3422,8 +3651,10 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                     period_value,
                     query,
                     mark_as_read,
+                    requested_model,
                     unread_count,
                     read_inbox_max_id,
+                    llm_operation_stats,
                 )
                 if success:
                     processed_count += 1
@@ -3439,17 +3670,15 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         # Удаляем сообщение о процессе
         await processing_msg.delete()
 
-        # Итоговое сообщение для папок
-        if len(chats_to_process) > 1:
-            summary = f"✅ Обработано чатов: {processed_count}"
-            if skipped_count > 0:
-                summary += f" (пропущено: {skipped_count})"
-            if mark_as_read and processed_count > 0:
-                summary += "\n📖 Сообщения отмечены как прочитанные"
+        summary = _format_operation_summary(
+            total_chats=len(chats_to_process),
+            processed_count=processed_count,
+            skipped_count=skipped_count,
+            mark_as_read=mark_as_read,
+            llm_stats=llm_operation_stats,
+        )
+        if summary:
             await update.message.reply_text(summary)
-        elif mark_as_read and processed_count > 0:
-            # Для одного чата тоже покажем
-            await update.message.reply_text("📖 Сообщения отмечены как прочитанные")
 
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
