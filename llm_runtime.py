@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 DEFAULT_FALLBACK_MODEL = "openrouter/free"
+YANDEX_AI_HOST = "ai.api.cloud.yandex.net"
 
 
 @dataclass
@@ -37,6 +38,22 @@ def normalize_chat_completions_url(url: str) -> str:
     if clean.endswith("/v1") or clean.endswith("/api/v1"):
         return f"{clean}/chat/completions"
     return clean
+
+
+def is_yandex_chat_completions_url(url: str) -> bool:
+    parsed = urlparse((url or "").strip())
+    return (parsed.hostname or "").lower() == YANDEX_AI_HOST
+
+
+def extract_yandex_folder_id(model: str) -> str | None:
+    value = (model or "").strip()
+    if not value.startswith("gpt://"):
+        return None
+
+    remainder = value[len("gpt://") :]
+    folder_id, _, _ = remainder.partition("/")
+    folder_id = folder_id.strip()
+    return folder_id or None
 
 
 class LLMRuntimeConfig:

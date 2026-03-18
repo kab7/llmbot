@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 import requests
 
 import bot
@@ -104,6 +105,62 @@ def test_call_llm_api_with_meta_uses_actual_model_from_response(monkeypatch):
 
     assert answer["content"] == "ok-answer"
     assert answer["model"] == "arcee-ai/trinity-large-preview:free"
+
+
+def test_call_llm_api_uses_yandex_headers(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://ai.api.cloud.yandex.net/v1",
+            "yandex-api-key",
+            "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest",
+        ),
+    )
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return DummyResponse(
+            200,
+            {
+                "model": "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest",
+                "choices": [{"message": {"content": "alice-ok"}}],
+            },
+        )
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
+
+    assert answer["content"] == "alice-ok"
+    assert captured["url"] == "https://ai.api.cloud.yandex.net/v1/chat/completions"
+    assert (
+        captured["headers"]["Authorization"] == "Api-Key yandex-api-key"
+    )
+    assert captured["headers"]["x-folder-id"] == "b1gd80qnnk1gu0ih57vg"
+    assert (
+        captured["json"]["model"]
+        == "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest"
+    )
+
+
+def test_call_llm_api_rejects_yandex_model_without_folder(monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://ai.api.cloud.yandex.net/v1",
+            "yandex-api-key",
+            "aliceai-llm/latest",
+        ),
+    )
+
+    with pytest.raises(
+        Exception, match="Для Yandex Cloud модель должна быть в формате"
+    ):
+        bot.call_llm_api([{"role": "user", "content": "hi"}])
 
 
 def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):

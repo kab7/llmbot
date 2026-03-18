@@ -31,7 +31,12 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 import config
-from llm_runtime import LLMRuntimeConfig, LLMSettings
+from llm_runtime import (
+    LLMRuntimeConfig,
+    LLMSettings,
+    extract_yandex_folder_id,
+    is_yandex_chat_completions_url,
+)
 from schedule_runtime import (
     build_schedule_record,
     compute_next_run,
@@ -111,6 +116,11 @@ schedules_lock = asyncio.Lock()
 scheduler: Optional[AsyncIOScheduler] = None
 application_ref: Optional[Application] = None
 SCHEDULE_RETRY_DELAY_SECONDS = 300
+ITER_DIALOGS_FIRST_DIALOG_TIMEOUT_SECONDS = 30
+ITER_DIALOGS_PROGRESS_LOG_EVERY = 25
+DIALOGS_PROBE_TIMEOUT_SECONDS = 15
+TELETHON_STARTUP_TIMEOUT_SECONDS = 20
+GET_FOLDERS_TIMEOUT_SECONDS = 20
 
 # Runtime-конфиг LLM (можно менять командами /seturl /settoken /setmodel)
 llm_runtime = LLMRuntimeConfig(
@@ -417,6 +427,25 @@ def _sanitize_url_for_logs(url: str) -> str:
         return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except Exception:
         return "<invalid-url>"
+
+
+def _build_llm_headers(url: str, token: str, model: str) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if not token:
+        return headers
+
+    if is_yandex_chat_completions_url(url):
+        folder_id = extract_yandex_folder_id(model)
+        if not folder_id:
+            raise ValueError(
+                "Для Yandex Cloud модель должна быть в формате gpt://<folder_id>/<model>"
+            )
+        headers["Authorization"] = f"Api-Key {token}"
+        headers["x-folder-id"] = folder_id
+        return headers
+
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _is_free_model_name(model: str) -> bool:
@@ -917,12 +946,6 @@ def _call_llm_api_internal(
                     return str(message)
             return str(data)[:300]
 
-        def build_headers(token: str) -> dict:
-            headers = {"Content-Type": "application/json"}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            return headers
-
         logger.info(
             f"📤 HTTP POST candidates: {', '.join([c.model for c in candidates])}"
         )
@@ -978,7 +1001,9 @@ def _call_llm_api_internal(
                         "model": candidate.model,
                         "messages": messages,
                     }
-                    headers = build_headers(candidate.token)
+                    headers = _build_llm_headers(
+                        candidate.url, candidate.token, candidate.model
+                    )
                     safe_url = _sanitize_url_for_logs(candidate.url)
                     logger.info(
                         f"   Candidate {candidate_idx}/{len(scope_candidates)}: model={candidate.model}, url={safe_url}"
@@ -1282,7 +1307,40 @@ async def init_telethon_client():
         config.SESSION_NAME, config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH
     )
 
-    await telethon_client.start(phone=config.TELEGRAM_PHONE)
+    logger.info(
+        "📡 Telethon init: connect() start, timeout=%ss",
+        TELETHON_STARTUP_TIMEOUT_SECONDS,
+    )
+    await asyncio.wait_for(
+        telethon_client.connect(), timeout=TELETHON_STARTUP_TIMEOUT_SECONDS
+    )
+    logger.info("📡 Telethon init: connect() complete")
+
+    authorized = True
+    try:
+        logger.info(
+            "📡 Telethon init: is_user_authorized() start, timeout=%ss",
+            TELETHON_STARTUP_TIMEOUT_SECONDS,
+        )
+        authorized = await asyncio.wait_for(
+            telethon_client.is_user_authorized(),
+            timeout=TELETHON_STARTUP_TIMEOUT_SECONDS,
+        )
+        logger.info("📡 Telethon init: is_user_authorized() -> %s", authorized)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "⚠️ Telethon auth check timed out after %ss; продолжаю с существующей session",
+            TELETHON_STARTUP_TIMEOUT_SECONDS,
+        )
+
+    if not authorized:
+        logger.warning(
+            "⚠️ Telethon session не авторизована, выполняю start(phone=...)"
+        )
+        await asyncio.wait_for(
+            telethon_client.start(phone=config.TELEGRAM_PHONE),
+            timeout=TELETHON_STARTUP_TIMEOUT_SECONDS,
+        )
     logger.info("✅ Telethon клиент подключен")
 
 
@@ -1872,6 +1930,19 @@ def calculate_similarity(str1: str, str2: str) -> float:
     return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
 
 
+def get_dialog_filter_title(dialog_filter: Any) -> str:
+    """Возвращает строковый заголовок папки для разных версий Telethon."""
+    raw_title = getattr(dialog_filter, "title", "")
+    if isinstance(raw_title, str):
+        return raw_title
+
+    text = getattr(raw_title, "text", None)
+    if isinstance(text, str):
+        return text
+
+    return str(raw_title or "")
+
+
 def _is_connection_error(error_msg: str) -> bool:
     """Проверяет, является ли ошибка ошибкой соединения"""
     error_lower = error_msg.lower()
@@ -2227,17 +2298,38 @@ async def get_folders() -> Dict[int, Any]:
         Dict[folder_id -> dialog_filter_object]
     """
     try:
+        logger.info(
+            "📁 get_folders: ensure_telethon_connected() start, timeout=%ss",
+            GET_FOLDERS_TIMEOUT_SECONDS,
+        )
         await ensure_telethon_connected()
+        logger.info("📁 get_folders: ensure_telethon_connected() complete")
 
         # Получаем список фильтров (папок)
-        result = await telethon_client(GetDialogFiltersRequest())
+        logger.info(
+            "📁 get_folders: GetDialogFiltersRequest start, timeout=%ss",
+            GET_FOLDERS_TIMEOUT_SECONDS,
+        )
+        result = await asyncio.wait_for(
+            telethon_client(GetDialogFiltersRequest()),
+            timeout=GET_FOLDERS_TIMEOUT_SECONDS,
+        )
+        logger.info("📁 get_folders: GetDialogFiltersRequest complete")
+        raw_filters = getattr(result, "filters", result)
 
         folders = {}
 
-        for dialog_filter in result:
-            if hasattr(dialog_filter, "id") and hasattr(dialog_filter, "title"):
+        for dialog_filter in raw_filters:
+            if (
+                getattr(dialog_filter, "id", None) is not None
+                and hasattr(dialog_filter, "title")
+            ):
                 folders[dialog_filter.id] = dialog_filter
-                logger.debug(f"  - ID {dialog_filter.id}: {dialog_filter.title}")
+                logger.debug(
+                    "  - ID %s: %s",
+                    dialog_filter.id,
+                    get_dialog_filter_title(dialog_filter),
+                )
 
         logger.info(f"📁 Найдено папок: {len(folders)}")
 
@@ -2276,7 +2368,7 @@ async def find_folder_by_name(
 
         # Функция для извлечения названия папки
         def get_folder_title(item):
-            return [item[1].title]  # item[1] - это dialog_filter
+            return [get_dialog_filter_title(item[1])]  # item[1] - это dialog_filter
 
         # Используем обобщенную функцию поиска
         best_item, best_title, best_similarity = find_best_match(
@@ -2312,30 +2404,65 @@ async def get_chats_in_folder(dialog_filter: Any) -> list:
         await ensure_telethon_connected()
 
         folder_id = dialog_filter.id
-        folder_title = dialog_filter.title
+        folder_title = get_dialog_filter_title(dialog_filter)
         logger.info(f"📂 Загрузка чатов из папки '{folder_title}' (ID {folder_id})...")
 
         include_count = len(getattr(dialog_filter, "include_peers", []) or [])
         exclude_count = len(getattr(dialog_filter, "exclude_peers", []) or [])
         logger.debug(f"  include_peers={include_count}, exclude_peers={exclude_count}")
         compiled_filter = _compile_dialog_filter(dialog_filter)
+        loop_started_at = time.monotonic()
 
         chats = []
         checked_count = 0
+        matched_count = 0
+
+        logger.info(
+            "📂 Начинаю обход диалогов для папки '%s': include=%s exclude=%s groups=%s broadcasts=%s exclude_read=%s exclude_muted=%s exclude_archived=%s",
+            folder_title,
+            include_count,
+            exclude_count,
+            bool(getattr(dialog_filter, "groups", False)),
+            bool(getattr(dialog_filter, "broadcasts", False)),
+            bool(getattr(dialog_filter, "exclude_read", False)),
+            bool(getattr(dialog_filter, "exclude_muted", False)),
+            bool(getattr(dialog_filter, "exclude_archived", False)),
+        )
+        await _probe_dialog_listing(f"folder '{folder_title}'")
 
         # Проходим по всем диалогам и проверяем, входят ли они в папку
-        async for dialog in telethon_client.iter_dialogs():
+        async for dialog in _iter_dialogs_with_debug(f"folder '{folder_title}'"):
             checked_count += 1
             entity = dialog.entity
 
             # Получаем название
             title = get_chat_display_name(entity)
 
+            if checked_count == 1:
+                logger.info(
+                    "📂 Первый диалог из iter_dialogs(): title='%s', entity_id=%s",
+                    title,
+                    getattr(entity, "id", "unknown"),
+                )
+
             # Проверяем, входит ли этот чат в папку (explicit + dynamic rules)
             if _dialog_in_filter(dialog, dialog_filter, compiled_filter):
                 logger.debug(f"  ✅ Чат '{title}' (ID: {entity.id}) в папке")
                 unread_count, read_inbox_max_id = _get_dialog_unread_state(dialog)
                 chats.append((entity, title, unread_count, read_inbox_max_id))
+                matched_count += 1
+
+            if checked_count % ITER_DIALOGS_PROGRESS_LOG_EVERY == 0:
+                elapsed = time.monotonic() - loop_started_at
+                logger.info(
+                    "📂 Прогресс папки '%s': проверено=%s, совпало=%s, elapsed=%.1fs, last='%s' (ID %s)",
+                    folder_title,
+                    checked_count,
+                    matched_count,
+                    elapsed,
+                    title,
+                    getattr(entity, "id", "unknown"),
+                )
 
         logger.info(f"📊 Проверено диалогов: {checked_count}")
         logger.info(f"✅ Найдено чатов в папке '{folder_title}': {len(chats)}")
@@ -2345,6 +2472,119 @@ async def get_chats_in_folder(dialog_filter: Any) -> list:
     except Exception as e:
         logger.error(f"❌ Ошибка при получении чатов из папки: {e}")
         raise Exception(f"Ошибка при получении чатов из папки: {str(e)}")
+
+
+async def _probe_dialog_listing(context_label: str) -> None:
+    """Проверяет, отвечает ли Telethon на самый простой запрос списка диалогов."""
+    if telethon_client is None:
+        raise Exception("Telethon клиент не инициализирован")
+
+    started_at = time.monotonic()
+    logger.info(
+        "📂 dialogs probe старт: %s, get_dialogs(limit=1), timeout=%ss",
+        context_label,
+        DIALOGS_PROBE_TIMEOUT_SECONDS,
+    )
+    try:
+        dialogs = await asyncio.wait_for(
+            telethon_client.get_dialogs(limit=1), timeout=DIALOGS_PROBE_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError as e:
+        elapsed = time.monotonic() - started_at
+        logger.error(
+            "❌ dialogs probe timeout: %s, elapsed=%.1fs",
+            context_label,
+            elapsed,
+        )
+        raise Exception(
+            "Telegram слишком долго отвечает даже на get_dialogs(limit=1) "
+            f"для {context_label} (> {DIALOGS_PROBE_TIMEOUT_SECONDS}с)"
+        ) from e
+    except Exception as e:
+        logger.error(
+            "❌ dialogs probe ошибка: %s, elapsed=%.1fs, error=%s",
+            context_label,
+            time.monotonic() - started_at,
+            e,
+        )
+        raise
+
+    first_title = None
+    first_entity_id = None
+    if dialogs:
+        first_dialog = dialogs[0]
+        first_entity = getattr(first_dialog, "entity", None)
+        if first_entity is not None:
+            first_title = get_chat_display_name(first_entity)
+            first_entity_id = getattr(first_entity, "id", None)
+
+    logger.info(
+        "📂 dialogs probe ok: %s, count=%s, elapsed=%.1fs, first='%s' (ID %s)",
+        context_label,
+        len(dialogs),
+        time.monotonic() - started_at,
+        first_title or "-",
+        first_entity_id or "-",
+    )
+
+
+async def _iter_dialogs_with_debug(context_label: str):
+    """Итерирует dialog list с отдельной диагностикой первого ответа Telethon."""
+    if telethon_client is None:
+        raise Exception("Telethon клиент не инициализирован")
+
+    started_at = time.monotonic()
+    yielded_count = 0
+    logger.info("📂 iter_dialogs старт: %s", context_label)
+    iterator = telethon_client.iter_dialogs().__aiter__()
+
+    while True:
+        fetch_started_at = time.monotonic()
+        try:
+            next_item = iterator.__anext__()
+            if yielded_count == 0:
+                dialog = await asyncio.wait_for(
+                    next_item, timeout=ITER_DIALOGS_FIRST_DIALOG_TIMEOUT_SECONDS
+                )
+                logger.info(
+                    "📂 iter_dialogs получил первый диалог для %s за %.1fs",
+                    context_label,
+                    time.monotonic() - fetch_started_at,
+                )
+            else:
+                dialog = await next_item
+        except StopAsyncIteration:
+            logger.info(
+                "📂 iter_dialogs завершён: %s, yielded=%s, elapsed=%.1fs",
+                context_label,
+                yielded_count,
+                time.monotonic() - started_at,
+            )
+            return
+        except asyncio.TimeoutError as e:
+            elapsed = time.monotonic() - started_at
+            logger.error(
+                "❌ iter_dialogs timeout: %s, yielded=%s, elapsed=%.1fs",
+                context_label,
+                yielded_count,
+                elapsed,
+            )
+            raise Exception(
+                "Telegram слишком долго не отдает список диалогов "
+                f"для {context_label} (> {ITER_DIALOGS_FIRST_DIALOG_TIMEOUT_SECONDS}с)"
+            ) from e
+        except Exception as e:
+            logger.error(
+                "❌ iter_dialogs ошибка: %s, yielded=%s, elapsed=%.1fs, error=%s",
+                context_label,
+                yielded_count,
+                time.monotonic() - started_at,
+                e,
+            )
+            raise
+
+        yielded_count += 1
+        yield dialog
 
 
 async def mark_chat_as_read(chat_entity) -> bool:
@@ -2989,6 +3229,12 @@ async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     limits_url = _derive_limits_endpoint(settings.url)
     safe_limits_url = _sanitize_url_for_logs(limits_url)
+    if is_yandex_chat_completions_url(settings.url):
+        await update.message.reply_text(
+            "ℹ️ Команда /limits сейчас поддерживается только для OpenRouter-compatible key endpoint и не работает для Yandex Cloud."
+        )
+        return
+
     headers = {"Authorization": f"Bearer {settings.token}"}
     try:
         response = await asyncio.to_thread(
@@ -3159,7 +3405,7 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Формируем список папок
         folder_list = "📁 **Ваши папки:**\n\n"
         for folder_id, dialog_filter in sorted(folders.items()):
-            folder_title = dialog_filter.title
+            folder_title = get_dialog_filter_title(dialog_filter)
             folder_list += f"• {folder_title} (ID: {folder_id})\n"
 
         folder_list += (

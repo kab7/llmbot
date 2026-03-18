@@ -6,6 +6,8 @@ from llm_runtime import (
     DEFAULT_OPENROUTER_URL,
     LLMRuntimeConfig,
     LLMSettings,
+    extract_yandex_folder_id,
+    is_yandex_chat_completions_url,
     normalize_chat_completions_url,
 )
 
@@ -54,6 +56,25 @@ def test_normalize_chat_completions_url_validation():
 
     with pytest.raises(ValueError, match="http:// или https://"):
         normalize_chat_completions_url("openrouter.ai/api/v1")
+
+
+def test_yandex_url_and_model_helpers():
+    assert (
+        is_yandex_chat_completions_url("https://ai.api.cloud.yandex.net/v1")
+        is True
+    )
+    assert (
+        is_yandex_chat_completions_url(
+            "https://ai.api.cloud.yandex.net/v1/chat/completions"
+        )
+        is True
+    )
+    assert is_yandex_chat_completions_url("https://openrouter.ai/api/v1") is False
+    assert (
+        extract_yandex_folder_id("gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest")
+        == "b1gd80qnnk1gu0ih57vg"
+    )
+    assert extract_yandex_folder_id("meta-llama/llama-3.3-70b-instruct:free") is None
 
 
 def test_runtime_setters_and_get_copy():

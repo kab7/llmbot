@@ -102,6 +102,12 @@ PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
 PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
 PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
 
+# Или Yandex Cloud AliceAI
+# folder_id указывается прямо в model, отдельная env-переменная не нужна
+# PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+# PRIMARY_LLM_MODEL=gpt://your_folder_id/aliceai-llm/latest
+# PRIMARY_LLM_API_KEY=your_yandex_api_key_here
+
 # Опциональный fallback
 FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
 FALLBACK_LLM_MODEL=openrouter/free
@@ -152,6 +158,14 @@ python bot.py
 - `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible endpoint
 - `/setmodel [primary|fallback] <model[,model2,...]>` - задать одну или несколько моделей
 - `/settoken [primary|fallback] <token>` - задать API ключ
+
+Для Yandex Cloud достаточно задать:
+- `PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions`
+- `PRIMARY_LLM_MODEL=gpt://<folder_id>/aliceai-llm/latest`
+- `PRIMARY_LLM_API_KEY=<api_key>`
+
+Бот сам переключит заголовок авторизации на `Authorization: Api-Key ...` и возьмет `x-folder-id` из model URI.
+`/limits` для Yandex Cloud не поддерживается, так как у него нет OpenRouter-style endpoint `.../key`.
 
 Команды `/seturl`, `/setmodel`, `/settoken` сохраняют изменения в `.env`, поэтому настройки сохраняются после перезапуска.
 Периодические расписания суммаризации сохраняются в локальной SQLite базе `schedules.db`.

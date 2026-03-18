@@ -35,6 +35,108 @@ def test_handle_telegram_error_messages():
     assert "Ошибка при чтении" in str(err)
 
 
+def test_init_telethon_client_uses_existing_authorized_session(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, session_name, api_id, api_hash):
+            calls.append(("init", session_name, api_id, api_hash))
+
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            calls.append("is_user_authorized")
+            return True
+
+        async def start(self, phone):
+            calls.append(("start", phone))
+
+    monkeypatch.setattr(bot, "TelegramClient", FakeClient)
+    monkeypatch.setattr(bot.config, "SESSION_NAME", "session")
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_ID", 123)
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(bot.config, "TELEGRAM_PHONE", "+10000000000")
+
+    asyncio.run(bot.init_telethon_client())
+
+    assert calls == [
+        ("init", "session", 123, "hash"),
+        "connect",
+        "is_user_authorized",
+    ]
+    assert isinstance(bot.telethon_client, FakeClient)
+
+
+def test_init_telethon_client_falls_back_to_start_when_unauthorized(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, session_name, api_id, api_hash):
+            calls.append(("init", session_name, api_id, api_hash))
+
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            calls.append("is_user_authorized")
+            return False
+
+        async def start(self, phone):
+            calls.append(("start", phone))
+
+    monkeypatch.setattr(bot, "TelegramClient", FakeClient)
+    monkeypatch.setattr(bot.config, "SESSION_NAME", "session")
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_ID", 123)
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(bot.config, "TELEGRAM_PHONE", "+10000000000")
+
+    asyncio.run(bot.init_telethon_client())
+
+    assert calls == [
+        ("init", "session", 123, "hash"),
+        "connect",
+        "is_user_authorized",
+        ("start", "+10000000000"),
+    ]
+    assert isinstance(bot.telethon_client, FakeClient)
+
+
+def test_init_telethon_client_continues_when_auth_check_times_out(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, session_name, api_id, api_hash):
+            calls.append(("init", session_name, api_id, api_hash))
+
+        async def connect(self):
+            calls.append("connect")
+
+        async def is_user_authorized(self):
+            calls.append("is_user_authorized")
+            await asyncio.sleep(0.05)
+            return True
+
+        async def start(self, phone):
+            calls.append(("start", phone))
+
+    monkeypatch.setattr(bot, "TelegramClient", FakeClient)
+    monkeypatch.setattr(bot.config, "SESSION_NAME", "session")
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_ID", 123)
+    monkeypatch.setattr(bot.config, "TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(bot.config, "TELEGRAM_PHONE", "+10000000000")
+    monkeypatch.setattr(bot, "TELETHON_STARTUP_TIMEOUT_SECONDS", 0.01)
+
+    asyncio.run(bot.init_telethon_client())
+
+    assert calls == [
+        ("init", "session", 123, "hash"),
+        "connect",
+        "is_user_authorized",
+    ]
+    assert isinstance(bot.telethon_client, FakeClient)
+
+
 def test_find_best_match_variants():
     items = ["Project Alpha", "Finance", "Random"]
     get_title = lambda x: [x]  # noqa: E731
@@ -640,6 +742,257 @@ def test_dialog_filter_helpers(monkeypatch):
         exclude_archived=False,
     )
     assert bot._dialog_in_filter(user_dialog, bot_filter) is True
+
+
+def test_get_chats_in_folder_collects_matching_dialogs(monkeypatch):
+    folder_filter = SimpleNamespace(
+        id=23,
+        title="AI",
+        include_peers=[],
+        exclude_peers=[],
+        pinned_peers=[],
+        bots=False,
+        contacts=False,
+        non_contacts=False,
+        groups=True,
+        broadcasts=False,
+        exclude_read=False,
+        exclude_muted=False,
+        exclude_archived=False,
+    )
+
+    dialogs = [
+        SimpleNamespace(
+            entity=SimpleNamespace(id=101, title="Match 1"),
+            unread_count=3,
+            dialog=SimpleNamespace(read_inbox_max_id=55),
+        ),
+        SimpleNamespace(
+            entity=SimpleNamespace(id=102, title="Skip"),
+            unread_count=0,
+            dialog=SimpleNamespace(read_inbox_max_id=77),
+        ),
+        SimpleNamespace(
+            entity=SimpleNamespace(id=103, title="Match 2"),
+            unread_count=1,
+            dialog=SimpleNamespace(read_inbox_max_id=None),
+        ),
+    ]
+
+    async def fake_iter_dialogs():
+        for dialog in dialogs:
+            yield dialog
+
+    async def fake_get_dialogs(limit=1):
+        return [dialogs[0]][:limit]
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(
+        bot, "_compile_dialog_filter", lambda dialog_filter: {"compiled": True}
+    )
+    monkeypatch.setattr(
+        bot,
+        "_dialog_in_filter",
+        lambda dialog, dialog_filter, compiled_filter=None: dialog.entity.id != 102,
+    )
+    monkeypatch.setattr(
+        bot,
+        "get_chat_display_name",
+        lambda entity: getattr(entity, "title", str(entity.id)),
+    )
+    monkeypatch.setattr(
+        bot,
+        "telethon_client",
+        SimpleNamespace(
+            iter_dialogs=fake_iter_dialogs,
+            get_dialogs=fake_get_dialogs,
+        ),
+    )
+
+    chats = asyncio.run(bot.get_chats_in_folder(folder_filter))
+
+    assert chats == [
+        (dialogs[0].entity, "Match 1", 3, 55),
+        (dialogs[2].entity, "Match 2", 1, None),
+    ]
+
+
+def test_get_chats_in_folder_times_out_before_first_dialog(monkeypatch):
+    folder_filter = SimpleNamespace(
+        id=23,
+        title="AI",
+        include_peers=[],
+        exclude_peers=[],
+        pinned_peers=[],
+        bots=False,
+        contacts=False,
+        non_contacts=False,
+        groups=True,
+        broadcasts=False,
+        exclude_read=False,
+        exclude_muted=False,
+        exclude_archived=False,
+    )
+
+    async def fake_iter_dialogs():
+        await asyncio.sleep(0.05)
+        yield SimpleNamespace(entity=SimpleNamespace(id=1, title="Late"))
+
+    async def fake_get_dialogs(limit=1):
+        return []
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(
+        bot, "_compile_dialog_filter", lambda dialog_filter: {"compiled": True}
+    )
+    monkeypatch.setattr(bot, "ITER_DIALOGS_FIRST_DIALOG_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        bot,
+        "telethon_client",
+        SimpleNamespace(
+            iter_dialogs=fake_iter_dialogs,
+            get_dialogs=fake_get_dialogs,
+        ),
+    )
+
+    try:
+        asyncio.run(bot.get_chats_in_folder(folder_filter))
+        raise AssertionError("expected Exception")
+    except Exception as e:
+        assert "Ошибка при получении чатов из папки" in str(e)
+        assert "Telegram слишком долго не отдает список диалогов" in str(e)
+
+
+def test_get_chats_in_folder_wraps_iter_dialogs_errors(monkeypatch):
+    folder_filter = SimpleNamespace(
+        id=23,
+        title="AI",
+        include_peers=[],
+        exclude_peers=[],
+        pinned_peers=[],
+        bots=False,
+        contacts=False,
+        non_contacts=False,
+        groups=True,
+        broadcasts=False,
+        exclude_read=False,
+        exclude_muted=False,
+        exclude_archived=False,
+    )
+
+    async def fake_iter_dialogs():
+        raise RuntimeError("iter stalled")
+        yield  # pragma: no cover
+
+    async def fake_get_dialogs(limit=1):
+        return []
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(
+        bot, "_compile_dialog_filter", lambda dialog_filter: {"compiled": True}
+    )
+    monkeypatch.setattr(
+        bot,
+        "telethon_client",
+        SimpleNamespace(
+            iter_dialogs=fake_iter_dialogs,
+            get_dialogs=fake_get_dialogs,
+        ),
+    )
+
+    try:
+        asyncio.run(bot.get_chats_in_folder(folder_filter))
+        raise AssertionError("expected Exception")
+    except Exception as e:
+        assert "Ошибка при получении чатов из папки" in str(e)
+        assert "iter stalled" in str(e)
+
+
+def test_probe_dialog_listing_success(monkeypatch):
+    dialog = SimpleNamespace(entity=SimpleNamespace(id=11, title="Probe chat"))
+
+    async def fake_get_dialogs(limit=1):
+        return [dialog]
+
+    monkeypatch.setattr(
+        bot, "telethon_client", SimpleNamespace(get_dialogs=fake_get_dialogs)
+    )
+
+    asyncio.run(bot._probe_dialog_listing("folder 'AI'"))
+
+
+def test_probe_dialog_listing_times_out(monkeypatch):
+    async def fake_get_dialogs(limit=1):
+        await asyncio.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(
+        bot, "telethon_client", SimpleNamespace(get_dialogs=fake_get_dialogs)
+    )
+    monkeypatch.setattr(bot, "DIALOGS_PROBE_TIMEOUT_SECONDS", 0.01)
+
+    try:
+        asyncio.run(bot._probe_dialog_listing("folder 'AI'"))
+        raise AssertionError("expected Exception")
+    except Exception as e:
+        assert "get_dialogs(limit=1)" in str(e)
+
+
+def test_get_folders_supports_legacy_and_wrapped_results(monkeypatch):
+    filters = [
+        SimpleNamespace(id=23, title="AI"),
+        SimpleNamespace(id=24, title="Work"),
+        SimpleNamespace(id=None, title="Ignored"),
+    ]
+
+    async def fake_ensure_connected():
+        return None
+
+    class FakeClientLegacy:
+        async def __call__(self, request):
+            return filters
+
+    class FakeClientWrapped:
+        async def __call__(self, request):
+            return SimpleNamespace(filters=filters)
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", fake_ensure_connected)
+
+    monkeypatch.setattr(bot, "telethon_client", FakeClientLegacy())
+    folders_legacy = asyncio.run(bot.get_folders())
+    assert folders_legacy == {23: filters[0], 24: filters[1]}
+
+    monkeypatch.setattr(bot, "telethon_client", FakeClientWrapped())
+    folders_wrapped = asyncio.run(bot.get_folders())
+    assert folders_wrapped == {23: filters[0], 24: filters[1]}
+
+
+def test_get_folders_returns_empty_dict_on_timeout(monkeypatch):
+    async def fake_ensure_connected():
+        return None
+
+    class FakeClient:
+        async def __call__(self, request):
+            await asyncio.sleep(0.05)
+            return []
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", fake_ensure_connected)
+    monkeypatch.setattr(bot, "telethon_client", FakeClient())
+    monkeypatch.setattr(bot, "GET_FOLDERS_TIMEOUT_SECONDS", 0.01)
+
+    folders = asyncio.run(bot.get_folders())
+
+    assert folders == {}
+
+
+def test_get_dialog_filter_title_supports_text_with_entities():
+    assert bot.get_dialog_filter_title(SimpleNamespace(title="AI")) == "AI"
+    assert (
+        bot.get_dialog_filter_title(
+            SimpleNamespace(title=SimpleNamespace(text="AI folder"))
+        )
+        == "AI folder"
+    )
 
 
 def test_is_dialog_muted_variants():
