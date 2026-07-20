@@ -109,6 +109,12 @@ def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
     assert "FALLBACK_LLM_MODEL=fallback/model" in env_text
     assert "PRIMARY_LLM_API_KEY=new-token-123456" in env_text
     assert "FALLBACK_LLM_TOKEN=fallback-token-5555" in env_text
+    assert "new-token-123456" not in bot.redact_sensitive_text(
+        "runtime token: new-token-123456"
+    )
+    assert "fallback-token-5555" not in bot.redact_sensitive_text(
+        "runtime token: fallback-token-5555"
+    )
 
 
 def test_set_commands_usage_and_validation(monkeypatch, tmp_path):

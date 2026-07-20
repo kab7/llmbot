@@ -45,6 +45,65 @@ from schedule_runtime import (
     save_schedules,
 )
 
+LOG_REDACTION_MARKER = "[REDACTED]"
+_SENSITIVE_LOG_VALUES: set[str] = set()
+_SENSITIVE_LOG_VALUES_LOCK = threading.RLock()
+_TELEGRAM_BOT_TOKEN_PATTERN = re.compile(
+    r"\d{5,}:[A-Za-z0-9_-]{20,}"
+)
+_AUTHORIZATION_VALUE_PATTERN = re.compile(
+    r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?"
+    r"(?:bearer|api-key)\s+)[^\s\"',}]+"
+)
+_SECRET_QUERY_VALUE_PATTERN = re.compile(
+    r"(?i)([?&](?:access_token|api_key|apikey|token)="
+    r")[^&#\s\"']+"
+)
+_OPENROUTER_TOKEN_PATTERN = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")
+
+
+def register_sensitive_log_value(value: Optional[str]) -> None:
+    """Registers a runtime secret so formatters can remove exact occurrences."""
+    normalized = (value or "").strip()
+    if len(normalized) < 8:
+        return
+    with _SENSITIVE_LOG_VALUES_LOCK:
+        _SENSITIVE_LOG_VALUES.add(normalized)
+
+
+def redact_sensitive_text(value: Any) -> str:
+    """Returns log-safe text without configured or recognizable credentials."""
+    redacted = str(value)
+    redacted = _TELEGRAM_BOT_TOKEN_PATTERN.sub(LOG_REDACTION_MARKER, redacted)
+    redacted = _OPENROUTER_TOKEN_PATTERN.sub(LOG_REDACTION_MARKER, redacted)
+    redacted = _AUTHORIZATION_VALUE_PATTERN.sub(
+        rf"\1{LOG_REDACTION_MARKER}", redacted
+    )
+    redacted = _SECRET_QUERY_VALUE_PATTERN.sub(
+        rf"\1{LOG_REDACTION_MARKER}", redacted
+    )
+    with _SENSITIVE_LOG_VALUES_LOCK:
+        exact_values = sorted(_SENSITIVE_LOG_VALUES, key=len, reverse=True)
+    for sensitive_value in exact_values:
+        redacted = redacted.replace(sensitive_value, LOG_REDACTION_MARKER)
+    return redacted
+
+
+class RedactingFormatter(logging.Formatter):
+    """Formats a complete record, then removes secrets including traceback text."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_sensitive_text(super().format(record))
+
+
+for _initial_sensitive_value in (
+    config.TELEGRAM_BOT_TOKEN,
+    config.TELEGRAM_API_HASH,
+    config.DEFAULT_LLM_TOKEN,
+    config.DEFAULT_FALLBACK_LLM_TOKEN,
+):
+    register_sensitive_log_value(_initial_sensitive_value)
+
 # Настройка логирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -56,9 +115,11 @@ _free_model_next_allowed_at: dict[str, float] = {}
 
 def _setup_file_logging() -> None:
     root_logger = logging.getLogger()
-    formatter = logging.Formatter(
+    formatter = RedactingFormatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
+    for handler in root_logger.handlers:
+        handler.setFormatter(formatter)
 
     if not any(
         isinstance(handler, RotatingFileHandler)
@@ -93,11 +154,12 @@ def _setup_file_logging() -> None:
 _setup_file_logging()
 llm_traffic_logger = logging.getLogger("llm_traffic")
 
-# Включаем логирование сетевых запросов
-logging.getLogger("httpx").setLevel(logging.INFO)
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("urllib3").setLevel(logging.INFO)
-logging.getLogger("requests").setLevel(logging.INFO)
+# HTTP clients may include credentials in URLs or headers. Keep them quiet in
+# production; the redacting formatter remains a second line of defense.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 # Включаем логирование Telegram API запросов (для отладки)
 logging.getLogger("telegram").setLevel(logging.INFO)
@@ -3343,9 +3405,11 @@ async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if scope == "fallback":
+            register_sensitive_log_value(raw_token)
             masked = llm_runtime.set_fallback_token(raw_token)
             _upsert_env_var("FALLBACK_LLM_TOKEN", raw_token)
         else:
+            register_sensitive_log_value(raw_token)
             masked = llm_runtime.set_token(raw_token)
             _upsert_env_var("PRIMARY_LLM_API_KEY", raw_token)
     except ValueError as e:

@@ -38,6 +38,7 @@ context.
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
 | `llm_runtime.py` | Mutable primary/fallback LLM settings, URL normalization, model-list normalization, candidate construction, token masking, and Yandex helpers. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
+| `scripts/scrub_logs.py` | Standalone in-place credential redaction for existing text logs; loads secret values from a dotenv file without printing them. |
 | `tests/test_bot_llm_api.py` | LLM retry/fallback, parser, processor, history, unread, and scheduled-job behavior. |
 | `tests/test_bot_llm_commands.py` | Bot command handlers and top-level message orchestration. |
 | `tests/test_bot_utils.py` | Intent guards, formatting, folders, Telethon helpers, scheduler initialization, and other utilities. |
@@ -264,8 +265,18 @@ folder calls additionally reject missing or invented source links as described
 above.
 `_cleanup_summary_text()` then removes known presentation artifacts.
 
-The complete payload and response are logged to `llm_traffic.log`. Never add
-tokens to that log, but assume the log already contains private chat data.
+The complete payload and response are logged to `llm_traffic.log`. Every
+configured handler uses `RedactingFormatter`, which removes registered exact
+secrets and recognizable Telegram/OpenRouter/header/query credential forms from
+the final formatted record, including traceback text. HTTP-client loggers are
+kept at `WARNING` to prevent credential-bearing request URLs from reaching
+handlers in the first place. `/settoken` must register the new value before any
+subsequent logging.
+
+Redaction does not make LLM traffic safe to publish: prompts and responses still
+contain private chat data. Historical text logs can be processed with
+`scripts/scrub_logs.py`; the utility preserves non-secret content and file mode
+and does not print loaded secret values.
 
 ## 7. Scheduling contract
 
@@ -371,9 +382,9 @@ all four runtime modules: `bot`, `config`, `llm_runtime`, and
 
 Last verified on 2026-07-20 with Python 3.12.13:
 
-- 127 tests passed;
-- total configured coverage: 74.75%;
-- `bot.py`: 71%;
+- 131 tests passed;
+- total configured coverage: 75.05%;
+- `bot.py`: 72%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;
 - `schedule_runtime.py`: 100%.
@@ -422,6 +433,14 @@ Preserve the distinctions between:
 - configured candidates and one-request model overrides.
 
 The tests in `tests/test_bot_llm_api.py` encode these distinctions explicitly.
+
+### Change logging
+
+Preserve both controls: network client loggers at `WARNING` and final-record
+redaction on every application handler. Add newly supported runtime credentials
+to `register_sensitive_log_value()` before they can be logged. Test direct
+messages, traceback text, header/query forms, runtime token changes, historical
+scrubbing, and idempotency.
 
 ### Change folder behavior
 

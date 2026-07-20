@@ -20,6 +20,8 @@ llmbot/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── env.example
+├── scripts/
+│   └── scrub_logs.py
 ├── docs/
 │   ├── AI_DEVELOPMENT.md
 │   ├── SCHEMAS.md
@@ -39,6 +41,7 @@ llmbot/
     ├── test_config.py
     ├── test_llm_runtime.py
     ├── test_schedule_runtime.py
+    ├── test_scrub_logs.py
     └── test_repository_contracts.py
 ```
 
@@ -149,6 +152,13 @@ Contains the schedule persistence/data layer:
 It does not import Telegram or APScheduler. `bot.py` validates records, serializes
 access with an asyncio lock, and registers scheduler jobs.
 
+### `scripts/scrub_logs.py`
+
+Standalone maintenance command for existing text logs. It loads credential
+values from `.env`, combines exact-value and recognizable credential-pattern
+redaction, rewrites changed files atomically, preserves file ownership/mode when
+permitted, and reports only replacement counts.
+
 ## Application flow
 
 ```text
@@ -248,6 +258,7 @@ No Python package/wheel is built; the project runs directly from source files.
 | `test_config.py` | Environment parsing and required/optional validation. |
 | `test_llm_runtime.py` | Mutable model settings and provider helpers. |
 | `test_schedule_runtime.py` | Recurrence calculations and SQLite persistence. |
+| `test_scrub_logs.py` | Runtime formatter redaction, HTTP logger levels, historical scrubbing, and idempotency. |
 | `test_repository_contracts.py` | Code-to-schema, command documentation, env inventory, SQLite columns, Docker module inventory. |
 
 `pyproject.toml` configures pytest and coverage for every runtime Python module.

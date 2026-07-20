@@ -218,7 +218,16 @@ Ignored runtime state:
 - `venv/`: local Python environment.
 
 `llm_traffic.log` contains chat history sent to providers. It is not a sanitized
-audit log. Do not publish logs, `.env`, session files, or schedule databases.
+audit log. Configured credentials and recognizable token/header forms are
+redacted by the logging formatter, and HTTP-client request logging is suppressed,
+but chat content remains sensitive. Do not publish logs, `.env`, session files,
+or schedule databases.
+
+Existing text logs can be scrubbed in place without printing secret values:
+
+```bash
+python3 scripts/scrub_logs.py --env-file .env /data/bot.log*
+```
 
 Runtime LLM commands update `.env` atomically. In-memory context is lost on
 restart. Schedules survive restart.

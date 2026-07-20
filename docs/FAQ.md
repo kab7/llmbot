@@ -225,8 +225,20 @@ scope and retry order. Aggregate statistics show requests and 429 counts.
 - `bot.log`: lifecycle, Telegram operations, errors, model names, statistics.
 - `llm_traffic.log`: complete payloads and responses.
 
+Configured tokens, common credential forms, and traceback occurrences are
+redacted automatically. HTTP-client request logs are suppressed because URLs may
+carry credentials. This does not remove private chat content from
+`llm_traffic.log`.
+
+Scrub historical text logs in place:
+
+```bash
+python3 scripts/scrub_logs.py --env-file .env /data/bot.log*
+```
+
 Never attach raw `llm_traffic.log`, `.env`, or session files to a public issue.
-Redact chat content, URLs with secrets, IDs, and tokens first.
+Review and redact chat content, sensitive IDs, and URLs even after token
+scrubbing.
 
 ## How do I update the bot?
 

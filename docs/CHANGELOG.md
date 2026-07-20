@@ -7,6 +7,9 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Final-record credential redaction for configured secrets, Telegram/OpenRouter
+  tokens, Authorization values, query credentials, and traceback text.
+- `scripts/scrub_logs.py` for safe in-place cleanup of historical text logs.
 - Folder-wide `combined` mode: merge selected histories from all folder dialogs
   and execute one arbitrary LLM operation over the combined context.
 - Original-post permalinks in combined history and output validation that
@@ -37,6 +40,8 @@ behavior is defined by code and tests.
 
 ### Fixed
 
+- HTTP client INFO logs no longer expose Telegram Bot API tokens embedded in
+  request URLs; runtime `/settoken` values are registered for redaction.
 - “Вчера” now means the previous local calendar day; rolling 24 hours remains
   available through “за сутки”.
 - Explicit mark-as-read no longer acknowledges chats when LLM analysis fails or
