@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kab7/llmbot/blob/main/docs/schemas/parser-command.schema.json",
   "title": "LLM parser command",
-  "description": "The exact ten-field object requested by config.PARSER_PROMPT before validate_command_payload adds internal time_missing.",
+  "description": "The exact eleven-field object requested by config.PARSER_PROMPT before validate_command_payload adds internal time_missing.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "target_type",
     "target_name",
+    "folder_mode",
     "period_type",
     "period_value",
     "mark_as_read",
@@ -25,9 +26,13 @@
     "target_name": {
       "type": ["string", "null"]
     },
+    "folder_mode": {
+      "type": ["string", "null"],
+      "enum": ["per_chat", "combined", null]
+    },
     "period_type": {
       "type": ["string", "null"],
-      "enum": ["days", "hours", "today", "last_messages", "unread", null]
+      "enum": ["days", "hours", "today", "yesterday", "last_messages", "unread", null]
     },
     "period_value": {
       "type": ["integer", "null"],
@@ -63,6 +68,23 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "target_type": {
+            "const": "folder"
+          }
+        },
+        "required": ["target_type"]
+      },
+      "else": {
+        "properties": {
+          "folder_mode": {
+            "type": "null"
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

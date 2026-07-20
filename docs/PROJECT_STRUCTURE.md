@@ -86,7 +86,7 @@ process_user_message
 parse_command_with_gpt
 validate_command_payload
 _resolve_single_chat / _resolve_folder_chats
-_process_single_chat
+_process_single_chat / _process_combined_folder
 get_chat_history
 _process_chat_with_openai_result
 _call_llm_api_internal
@@ -139,7 +139,7 @@ Contains the schedule persistence/data layer:
 
 - recurrence constants;
 - SQLite `schedules` table creation;
-- additive `requested_model` migration;
+- additive `requested_model` and `folder_mode` migrations;
 - row conversion;
 - next-run calculations;
 - record construction;
@@ -161,13 +161,26 @@ Telegram Bot API
   -> context resolution
   -> schedule persistence OR target resolution
   -> Telethon history selection
-  -> processor LLM
+  -> per-chat processor LLM calls OR one merged-folder processor LLM call
   -> response validation/cleanup
   -> Telegram HTML/plain output
   -> optional read acknowledgement
 ```
 
-Folder requests branch from target resolution into a sequential per-chat loop.
+Folder requests branch after target resolution:
+
+```text
+folder_mode=per_chat
+  -> load one history
+  -> one LLM operation and result
+  -> repeat for every dialog
+
+folder_mode=combined
+  -> load all histories with original-post permalinks
+  -> merge source-labelled blocks
+  -> one LLM operation and one cross-folder result
+  -> validate that cited Telegram URLs came from the merged history
+```
 
 ## Persistence
 
@@ -196,7 +209,7 @@ documented in
 {
     "target_type": "chat" | "folder",
     "target_name": str,
-    "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | None,
+    "period_type": "days" | "hours" | "today" | "yesterday" | "last_messages" | "unread" | None,
     "period_value": int | None,
 }
 ```
@@ -207,8 +220,10 @@ It is not persisted.
 
 ### `setup.sh`
 
-Creates or repairs the local `venv`, installs runtime dependencies, optionally
-installs dev dependencies, and initializes `.env` without overwriting it.
+Reuses a healthy supported local `venv` even without a compatible system Python,
+or creates/repairs it from an external interpreter. It installs runtime
+dependencies, optionally installs dev dependencies, and initializes `.env`
+without overwriting it.
 
 ### `start.sh`
 

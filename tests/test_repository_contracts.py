@@ -116,6 +116,7 @@ def test_parser_schema_matches_runtime_contract():
 
     assert set(schema["required"]) == set(properties)
     assert set(properties["target_type"]["enum"]) == bot.ALLOWED_TARGET_TYPES
+    assert set(properties["folder_mode"]["enum"]) == bot.ALLOWED_FOLDER_MODES
     assert set(properties["period_type"]["enum"]) == bot.ALLOWED_PERIOD_TYPES
     assert set(properties["recurrence_type"]["enum"]) == {
         "daily",

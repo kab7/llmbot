@@ -64,6 +64,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
             "weekday": None,
             "day_of_month": None,
         },
+        folder_mode="combined",
         now_local=now,
     )
     assert rec["id"]
@@ -74,6 +75,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
     save_schedules(file_path, [rec])
     loaded = load_schedules(file_path)
     assert loaded and loaded[0]["id"] == rec["id"]
+    assert loaded[0]["folder_mode"] == "combined"
     assert loaded[0]["requested_model"] == "anthropic/claude-opus-4.6"
 
 
@@ -219,4 +221,5 @@ def test_load_schedules_migrates_requested_model_column(tmp_path: Path):
     loaded = load_schedules(db_path)
     assert loaded[0]["id"] == "legacy01"
     assert loaded[0]["requested_model"] is None
+    assert loaded[0]["folder_mode"] is None
     assert loaded[0]["mark_as_read"] is False

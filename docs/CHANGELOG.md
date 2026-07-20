@@ -7,6 +7,13 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Folder-wide `combined` mode: merge selected histories from all folder dialogs
+  and execute one arbitrary LLM operation over the combined context.
+- Original-post permalinks in combined history and output validation that
+  requires real source URLs and rejects invented Telegram links.
+- Calendar `yesterday` period and “каждое утро” daily-schedule recognition.
+- Persistent `folder_mode` in the schedule SQLite schema with additive
+  migration for existing databases.
 - Canonical agent guide in `docs/AI_DEVELOPMENT.md`.
 - Machine-readable parser-command and schedule-record schemas.
 - Repository contract tests that compare code, schemas, SQLite columns,
@@ -18,7 +25,8 @@ behavior is defined by code and tests.
   unread boundaries, explicit mark-as-read, schedules, one-request model
   overrides, provider differences, persistence, and privacy.
 - `setup.sh` is non-interactive, validates Python 3.11-3.13, repairs unhealthy
-  environments, supports `--dev` and `--recreate`, and preserves `.env`.
+  environments, reuses a healthy venv when no compatible system Python is on
+  `PATH`, supports `--dev` and `--recreate`, and preserves `.env`.
 - `start.sh` validates interpreter compatibility and runtime imports before
   launching with `exec`.
 - Runtime/dev dependencies now have compatibility upper bounds.
@@ -29,10 +37,14 @@ behavior is defined by code and tests.
 
 ### Fixed
 
+- “Вчера” now means the previous local calendar day; rolling 24 hours remains
+  available through “за сутки”.
+- Explicit mark-as-read no longer acknowledges chats when LLM analysis fails or
+  every candidate response is rejected.
 - Existing but broken `venv/` directories no longer pass setup/start checks.
-- Removed documentation claims that “yesterday” means a calendar day, that
-  Telethon sessions should be assumed encrypted, or that chat content is never
-  stored locally despite full LLM traffic logging.
+- Removed documentation claims that Telethon sessions should be assumed
+  encrypted or that chat content is never stored locally despite full LLM
+  traffic logging.
 
 ## 1.2.0 - 2026-03-06
 

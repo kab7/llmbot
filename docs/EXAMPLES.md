@@ -17,31 +17,61 @@ configured model.
 Accepted targets include users, groups, supergroups, and channels visible to the
 Telethon account.
 
-## Telegram folder
+## Telegram folder: per-chat mode
 
 ```text
 Суммаризируй папку AI за последние сутки
 Что нового в папке Проекты сегодня?
 Какие риски обсуждали в папке Работа за неделю?
 Суммаризируй непрочитанные во всех чатах папки Новости
+Сделай отдельное саммари по каждому каналу в папке Новости
 ```
 
 The bot resolves the folder, reproduces its Telegram filter rules, and processes
-matched dialogs sequentially. Each chat receives its own result.
+matched dialogs sequentially. This is the default `folder_mode=per_chat`; each
+chat receives its own LLM operation and result.
+
+## Telegram folder: combined mode
+
+```text
+Каждое утро в 10:00 сделай мне сводку топ-10 новостей по всем каналам из папки news за вчера
+В папке news за вчера найти все упоминания складов WB
+Сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными
+```
+
+These requests select `folder_mode=combined`. The bot loads the selected history
+from every matching dialog, adds explicit source boundaries and an exact
+permalink after each linkable message, and sends the merged history to one LLM
+operation. The result is one cross-folder answer rather than per-channel
+summaries. Repeated coverage of the same event should be deduplicated.
+
+The combined result must cite URLs copied from the supplied history. A response
+without a real source URL, or with an invented Telegram URL, is rejected by the
+response validator. Telegram provides links for public channels and for private
+channels/supergroups when a message ID is known. Legacy private `Chat` entities
+do not have usable permalinks.
 
 ## Periods
 
-Last N × 24 hours:
+Previous calendar day:
+
+```text
+Суммаризируй чат Работа за вчера
+```
+
+“Вчера” maps to `period_type=yesterday`, from the previous local midnight up to
+the current local midnight. This is suitable for a digest scheduled every
+morning.
+
+Rolling periods:
 
 ```text
 Суммаризируй чат Работа за сутки
-Суммаризируй чат Работа за вчера
 Суммаризируй чат Работа за 7 дней
 Суммаризируй чат Работа за неделю
 ```
 
-The current parser maps both “вчера” and “за сутки” to `days=1`, meaning the last
-24 hours rather than the previous calendar day.
+“За сутки” maps to `days=1`, meaning the last 24 hours.
 
 Hours:
 
@@ -92,9 +122,9 @@ Explicitly acknowledge processed chats:
 `mark_as_read` is discarded unless the original text contains explicit
 mark-as-read intent. Merely loading history does not acknowledge a chat.
 
-Current edge case: analysis failures are converted to visible error text by the
-LLM helper, so an explicit mark-as-read request can still acknowledge the chat
-after an LLM failure. See `docs/AI_DEVELOPMENT.md` before changing this behavior.
+An explicit mark-as-read request is applied only after successful LLM analysis.
+If every model/attempt fails or the response is rejected, the selected chats
+remain unread.
 
 ## Follow-up context
 
@@ -159,6 +189,7 @@ Daily:
 
 ```text
 Суммаризируй папку AI каждый день в 20:00
+Каждое утро в 10:00 сделай топ-10 новостей по всем каналам из папки news за вчера
 ```
 
 Weekly:
@@ -179,7 +210,7 @@ Every N days:
 Суммаризируй папку Новости раз в 3 дня в 19:30
 ```
 
-Combined behavior:
+Combined options:
 
 ```text
 Суммаризируй непрочитанные в папке AI каждый день в 20:00 с помощью anthropic/claude-opus-4.6 и отмечай прочитанными

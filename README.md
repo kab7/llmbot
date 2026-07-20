@@ -12,9 +12,12 @@ machine-readable derived contracts are in [docs/SCHEMAS.md](docs/SCHEMAS.md).
 ## Current capabilities
 
 - Analyze one Telegram chat, private dialog, group, or channel.
-- Analyze all dialogs matched by a Telegram folder.
-- Select the last N days, hours, messages, today from local midnight, or unread
-  messages.
+- Analyze all dialogs matched by a Telegram folder either separately per chat
+  or as one merged cross-folder context and one LLM operation.
+- Select the last N days, hours, messages, today from local midnight, the
+  previous local calendar day, or unread messages.
+- Preserve exact Telegram post permalinks in merged history and require
+  combined answers to cite links that actually occurred in that history.
 - Optionally acknowledge processed chats as read when explicitly requested.
 - Reuse the last successfully resolved target and period as in-memory context.
 - Use ordered primary and fallback LLM model lists with retries, free-model
@@ -38,9 +41,11 @@ cd llmbot
 ./setup.sh --dev
 ```
 
-`setup.sh` finds a supported Python, creates or repairs `venv`, installs runtime
-dependencies, optionally installs test dependencies with `--dev`, and creates
-`.env` from `env.example` only when `.env` does not exist.
+`setup.sh` reuses a healthy supported `venv` even when no compatible system
+Python is currently on `PATH`; otherwise it finds a supported Python and creates
+or repairs the environment. It installs runtime dependencies, optionally
+installs test dependencies with `--dev`, and creates `.env` from `env.example`
+only when `.env` does not exist.
 
 Fill at least these required values in `.env`:
 
@@ -134,7 +139,18 @@ Folder:
 Суммаризируй непрочитанные во всех чатах папки AI
 Что решили в папке Проекты за последние 3 дня?
 Суммаризируй папку Новости и отметь как прочитанные
+В папке news за вчера найти все упоминания складов WB
+Сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными
 ```
+
+Ordinary folder wording keeps the original `per_chat` mode and emits one result
+per dialog. Cross-folder wording such as one common digest, top-N across all
+channels, or finding all mentions selects `combined`: all selected histories
+are merged with source boundaries, then one LLM request produces one result.
+Combined results cite the original posts. Public channels use
+`t.me/<username>/<message_id>` and private channels/supergroups use
+`t.me/c/...`; Telegram cannot generate a permalink for a legacy private
+`Chat`.
 
 One-request model override:
 
@@ -148,6 +164,7 @@ Schedule:
 Суммаризируй папку AI каждый день в 20:00
 Суммаризируй чат Работа каждую неделю в 09:00
 Суммаризируй папку Новости раз в 3 дня в 19:30
+Каждое утро в 10:00 сделай топ-10 новостей по всем каналам из папки news за вчера
 ```
 
 A recurring request is saved instead of running immediately. Weekly and monthly
@@ -159,9 +176,10 @@ More examples: [docs/EXAMPLES.md](docs/EXAMPLES.md).
 
 | Parsed period | Selection |
 | --- | --- |
-| `days=N` | Current UTC time minus N × 24 hours. “Вчера” and “за сутки” both map to the last 24 hours. |
+| `days=N` | Current UTC time minus N × 24 hours. “За сутки” maps to `days=1`. |
 | `hours=N` | Current UTC time minus N hours. |
 | `today` | Local midnight through now. |
+| `yesterday` | Previous local calendar day: prior local midnight through current local midnight. |
 | `last_messages=N` | Latest N messages, returned to the LLM chronologically. |
 | `unread` | Messages above the known `read_inbox_max_id`, limited by unread count or the default. |
 | omitted | Context period when available; otherwise latest 300 messages. |

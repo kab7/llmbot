@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -999,6 +999,54 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     assert "тех. ошибок 0" in result
 
 
+def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
+    captured = {}
+    source_url = "https://t.me/source_a/11"
+
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+        max_attempts_override=None,
+    ):
+        captured["validator"] = response_validator
+        assert response_validator(
+            "Новость без ссылки", SimpleNamespace(model="model/test")
+        )
+        assert response_validator(
+            "Новость — [оригинал](https://t.me/invented/99)",
+            SimpleNamespace(model="model/test"),
+        )
+        assert (
+            response_validator(
+                f"Новость — [оригинал]({source_url})",
+                SimpleNamespace(model="model/test"),
+            )
+            is None
+        )
+        return {
+            "content": f"Новость — [оригинал]({source_url})",
+            "model": "model/test",
+            "url": "https://example.test/v1",
+            "stats": {},
+        }
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+
+    result = asyncio.run(
+        bot._process_chat_with_openai_result(
+            f"Source [Оригинал]({source_url})",
+            "сделай общую сводку",
+            "вчера",
+            required_source_urls={source_url},
+        )
+    )
+
+    assert source_url in result["answer"]
+    assert captured["validator"] is not None
+
+
 def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch):
     notifications = []
 
@@ -1145,6 +1193,285 @@ def test_get_chat_history_unread_uses_read_boundary(monkeypatch):
     assert first_id == 101
     assert "fresh 2026" in history
     assert "old 2023" not in history
+
+
+def test_get_chat_history_yesterday_filters_today_and_adds_original_links(
+    monkeypatch,
+):
+    calls = {}
+    today_start = datetime.now().astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    yesterday_message_date = (today_start - timedelta(hours=2)).astimezone(
+        timezone.utc
+    )
+    today_message_date = (today_start + timedelta(hours=1)).astimezone(timezone.utc)
+
+    async def fake_ensure_connected():
+        return None
+
+    class DummyClient:
+        async def iter_messages(self, chat_entity, **kwargs):
+            calls["kwargs"] = kwargs
+            sender = SimpleNamespace(id=1, first_name="News", last_name=None)
+            yield SimpleNamespace(
+                id=101,
+                text="yesterday post",
+                sender=sender,
+                date=yesterday_message_date,
+            )
+            yield SimpleNamespace(
+                id=102,
+                text="today post",
+                sender=sender,
+                date=today_message_date,
+            )
+
+    monkeypatch.setattr(bot, "ensure_telethon_connected", fake_ensure_connected)
+    monkeypatch.setattr(bot, "telethon_client", DummyClient())
+    entity = SimpleNamespace(id=-1001234567890, username="daily_news")
+
+    history, first_id = asyncio.run(
+        bot.get_chat_history(
+            entity,
+            "yesterday",
+            None,
+            include_message_links=True,
+        )
+    )
+
+    expected_start = (today_start - timedelta(days=1)).astimezone(timezone.utc)
+    assert calls["kwargs"]["reverse"] is True
+    assert calls["kwargs"]["offset_date"] == expected_start
+    assert first_id == 101
+    assert "yesterday post" in history
+    assert "today post" not in history
+    assert "[Оригинал](https://t.me/daily_news/101)" in history
+
+
+def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
+    monkeypatch,
+):
+    calls = {"histories": [], "llm": [], "marked": []}
+
+    class DummyProcessing:
+        def __init__(self):
+            self.edits = []
+
+        async def edit_text(self, text):
+            self.edits.append(text)
+
+    class DummyMessage:
+        def __init__(self):
+            self.sent = []
+
+        async def reply_text(self, text, parse_mode=None):
+            self.sent.append((text, parse_mode))
+
+    async def fake_get_history(
+        chat_entity,
+        period_type=None,
+        period_value=None,
+        include_message_links=False,
+    ):
+        calls["histories"].append(
+            (chat_entity.username, period_type, period_value, include_message_links)
+        )
+        message_id = 11 if chat_entity.username == "source_a" else 22
+        return (
+            f"[2026-07-19 10:00:00] News: item https://example.com/article "
+            f"[Оригинал](https://t.me/{chat_entity.username}/{message_id})",
+            message_id,
+        )
+
+    async def fake_process(
+        chat_history,
+        query,
+        period_text,
+        rate_limit_notifier=None,
+        requested_model=None,
+        required_source_urls=None,
+    ):
+        calls["llm"].append(
+            (
+                chat_history,
+                query,
+                period_text,
+                requested_model,
+                required_source_urls,
+            )
+        )
+        return {
+            "answer": (
+                "1. Общая новость — [оригинал](https://t.me/source_a/11), "
+                "[подтверждение](https://t.me/source_b/22)"
+            ),
+            "stats": {},
+        }
+
+    async def fake_mark_read(chat_entity):
+        calls["marked"].append(chat_entity.username)
+        return True
+
+    entity_a = SimpleNamespace(
+        id=-1001111111111, username="source_a", title="Source A"
+    )
+    entity_b = SimpleNamespace(
+        id=-1002222222222, username="source_b", title="Source B"
+    )
+    update = SimpleNamespace(message=DummyMessage())
+
+    monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
+    monkeypatch.setattr(bot, "_process_chat_with_openai_result", fake_process)
+    monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
+
+    processed, skipped = asyncio.run(
+        bot._process_combined_folder(
+            update,
+            DummyProcessing(),
+            [
+                (entity_a, "Source A", 2, 9),
+                (entity_b, "Source B", 1, 20),
+            ],
+            "news",
+            "unread",
+            None,
+            "сделай топ-10 новостей",
+            True,
+        )
+    )
+
+    assert (processed, skipped) == (2, 0)
+    assert len(calls["llm"]) == 1
+    combined_history, combined_query, period_text, _, required_urls = calls["llm"][0]
+    assert "ИСТОЧНИК 1" in combined_history
+    assert "ИСТОЧНИК 2" in combined_history
+    assert "https://t.me/source_a/11" in combined_history
+    assert "https://t.me/source_b/22" in combined_history
+    assert "точные markdown-ссылки" in combined_query
+    assert required_urls == {
+        "https://t.me/source_a/11",
+        "https://t.me/source_b/22",
+    }
+    assert "https://example.com/article" not in required_urls
+    assert period_text.startswith("непрочитанные сообщения")
+    assert all(item[3] is True for item in calls["histories"])
+    assert calls["marked"] == ["source_a", "source_b"]
+    assert len(update.message.sent) == 1
+    assert "https://t.me/source_a/11" in update.message.sent[0][0]
+
+
+def test_process_combined_folder_does_not_mark_read_after_llm_failure(monkeypatch):
+    marked = []
+
+    class DummyProcessing:
+        async def edit_text(self, text):
+            return None
+
+    class DummyMessage:
+        async def reply_text(self, text, parse_mode=None):
+            return None
+
+    async def fake_get_history(*args, **kwargs):
+        return (
+            "News [Оригинал](https://t.me/source_a/11)",
+            11,
+        )
+
+    async def fake_process(*args, **kwargs):
+        return {"answer": "❌ provider failed", "stats": {}, "ok": False}
+
+    async def fake_mark_read(chat_entity):
+        marked.append(chat_entity)
+        return True
+
+    entity = SimpleNamespace(id=-1001111111111, username="source_a")
+    monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
+    monkeypatch.setattr(bot, "_process_chat_with_openai_result", fake_process)
+    monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
+
+    result = asyncio.run(
+        bot._process_combined_folder(
+            SimpleNamespace(message=DummyMessage()),
+            DummyProcessing(),
+            [(entity, "Source A", 1, 10)],
+            "news",
+            "unread",
+            None,
+            "сделай сводку",
+            True,
+        )
+    )
+
+    assert result == (0, 1)
+    assert marked == []
+
+
+def test_execute_scheduled_summary_routes_combined_folder_once(monkeypatch):
+    calls = {}
+
+    class DummyBot:
+        async def send_message(self, chat_id, text, parse_mode=None):
+            return None
+
+    entity = SimpleNamespace(id=-1001234567890, username="news")
+    monkeypatch.setattr(bot, "application_ref", SimpleNamespace(bot=DummyBot()))
+
+    async def fake_resolve_folder(target_name, processing_msg):
+        return [(entity, "News", 3, 100)], target_name, None
+
+    async def fake_combined(
+        update,
+        processing_msg,
+        chats_to_process,
+        folder_name,
+        period_type,
+        period_value,
+        query,
+        mark_as_read,
+        requested_model=None,
+        llm_stats_accumulator=None,
+    ):
+        calls["args"] = (
+            chats_to_process,
+            folder_name,
+            period_type,
+            period_value,
+            query,
+            mark_as_read,
+        )
+        return 1, 0
+
+    async def fail_single(*args, **kwargs):
+        raise AssertionError("per-chat mode must not run")
+
+    monkeypatch.setattr(bot, "_resolve_folder_chats", fake_resolve_folder)
+    monkeypatch.setattr(bot, "_process_combined_folder", fake_combined)
+    monkeypatch.setattr(bot, "_process_single_chat", fail_single)
+
+    result = asyncio.run(
+        bot._execute_scheduled_summary(
+            {
+                "chat_id": 77,
+                "target_type": "folder",
+                "target_name": "news",
+                "folder_mode": "combined",
+                "period_type": "yesterday",
+                "period_value": None,
+                "query": "сделай топ-10 новостей",
+                "mark_as_read": False,
+            }
+        )
+    )
+
+    assert result == (1, 0, {})
+    assert calls["args"][1:] == (
+        "news",
+        "yesterday",
+        None,
+        "сделай топ-10 новостей",
+        False,
+    )
 
 
 def test_process_single_chat_unread_mode_uses_unread_count(monkeypatch):
@@ -1314,6 +1641,51 @@ def test_process_single_chat_unread_marks_read_when_nothing_to_summarize(monkeyp
 
     assert success is False
     assert calls["marked"] == 1
+
+
+def test_process_single_chat_does_not_mark_read_after_llm_failure(monkeypatch):
+    calls = {"marked": 0}
+
+    async def fake_get_history(*args, **kwargs):
+        return "history", 1
+
+    async def fake_process(*args, **kwargs):
+        return {"answer": "❌ failed", "stats": {}, "ok": False}
+
+    async def fake_mark_read(chat_entity):
+        calls["marked"] += 1
+        return True
+
+    class DummyProcessing:
+        async def edit_text(self, text):
+            return None
+
+    class DummyMessage:
+        async def reply_text(self, text, parse_mode=None):
+            return None
+
+    monkeypatch.setattr(bot, "get_chat_history", fake_get_history)
+    monkeypatch.setattr(bot, "_process_chat_with_openai_result", fake_process)
+    monkeypatch.setattr(bot, "mark_chat_as_read", fake_mark_read)
+
+    success = asyncio.run(
+        bot._process_single_chat(
+            SimpleNamespace(message=DummyMessage()),
+            DummyProcessing(),
+            SimpleNamespace(id=-100123, username="source"),
+            "Source",
+            1,
+            1,
+            "unread",
+            None,
+            "query",
+            True,
+            unread_count=1,
+        )
+    )
+
+    assert success is False
+    assert calls["marked"] == 0
 
 
 def test_process_single_chat_unread_mode_skips_empty_unread():

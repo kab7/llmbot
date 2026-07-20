@@ -50,6 +50,24 @@ account must be able to see the target.
 explicit/pinned peers and dynamic filter flags, then applies configured
 read/muted/archive exclusions.
 
+## How are folders analyzed?
+
+There are two modes:
+
+- `per_chat` is the default and runs one LLM operation for each matched dialog;
+- `combined` loads all selected histories first and runs one operation over the
+  merged, source-labelled context.
+
+Explicit cross-folder intent selects `combined`, for example a single top-10
+across all channels or finding every mention of a topic in the folder. Explicit
+“separately for each channel” wording selects `per_chat`.
+
+Combined answers cite original post links copied from the history. The validator
+rejects a linkless combined response when linkable source messages exist and
+rejects invented Telegram URLs. Telegram cannot create an original-message
+permalink for a legacy private `Chat`; public channels and private
+channels/supergroups are linkable.
+
 ## How does fuzzy matching work?
 
 Matching is case-insensitive and removes emoji:
@@ -66,11 +84,13 @@ Because 0.5 is permissive, check the bot's visible recognized-command message.
 - `days`: last N × 24 hours;
 - `hours`: last N hours;
 - `today`: local midnight through now;
+- `yesterday`: previous local midnight through current local midnight;
 - `last_messages`: latest N messages;
 - `unread`: messages after the known read boundary;
 - omitted: inherited context period or latest 300 messages.
 
-“Вчера” is currently parsed as the last 24 hours, not the previous calendar day.
+“Вчера” selects the previous calendar day. “За сутки” selects the rolling last
+24 hours.
 
 ## Are media and service messages analyzed?
 
@@ -82,9 +102,10 @@ Media-only and service events are ignored.
 No. Read acknowledgement requires explicit wording such as “отметь как
 прочитанные”. A deterministic guard clears an LLM-invented `mark_as_read=true`.
 
-Known edge case: LLM errors are returned as answer text rather than raised, so an
-explicit mark-as-read request can still acknowledge a chat after an analysis
-failure.
+LLM errors are shown to the user but do not acknowledge the selected chat.
+Mark-as-read runs only after successful analysis. The text-empty unread case
+below is the deliberate exception because there is nothing for the LLM to
+analyze.
 
 ## How does unread mode work?
 
@@ -146,8 +167,10 @@ Supported recurrence:
 - monthly, anchored to creation day and clamped in shorter months;
 - every N days.
 
-Uncaught job-level errors retry after 300 seconds. Per-chat errors in a folder
-are counted as skipped; the overall job still advances normally.
+Uncaught job-level errors retry after 300 seconds. Per-chat errors in a
+`per_chat` folder job are counted as skipped. A combined job skips sources whose
+history cannot be loaded and analyzes the remaining histories in one call. The
+overall job still advances normally.
 
 ## Why did an overdue schedule not run at startup?
 
@@ -185,9 +208,11 @@ when used. Provider retention and privacy depend on that external service.
 
 ## Why is a folder request slow?
 
-Dialogs are enumerated and folder chats are analyzed sequentially. Entire
-selected text history is sent in one LLM request per chat. Reduce the period or
-message count, or select one chat.
+Dialogs and histories are enumerated sequentially. In `per_chat` mode each
+selected text history is sent in one LLM request. In `combined` mode all selected
+history text is merged into one potentially large request. There is no
+token-aware chunking, so reduce the period or folder size when provider context
+limits are reached.
 
 ## What does HTTP 429 handling do?
 

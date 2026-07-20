@@ -4,7 +4,8 @@ The application code remains the source of truth. These schemas are derived
 artifacts for agents, reviews, fixtures, and external tooling:
 
 - [`schemas/parser-command.schema.json`](schemas/parser-command.schema.json)
-  describes the exact ten fields requested by `config.PARSER_PROMPT`.
+  describes the exact eleven fields requested by `config.PARSER_PROMPT`,
+  including the folder-wide `folder_mode`.
   `validate_command_payload()` normalizes that object and adds the internal
   `time_missing` field.
 - [`schemas/schedule-record.schema.json`](schemas/schedule-record.schema.json)

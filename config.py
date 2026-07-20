@@ -145,11 +145,12 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 Верни ТОЛЬКО один валидный JSON-объект, без markdown и без пояснений.
 Ответ должен быть валидным JSON.
 
-Верни РОВНО эти 10 ключей (без дополнительных):
+Верни РОВНО эти 11 ключей (без дополнительных):
 {
   "target_type": "chat" | "folder" | null,
   "target_name": string | null,
-  "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | null,
+  "folder_mode": "per_chat" | "combined" | null,
+  "period_type": "days" | "hours" | "today" | "yesterday" | "last_messages" | "unread" | null,
   "period_value": integer | null,
   "mark_as_read": boolean,
   "query": string | null,
@@ -165,10 +166,17 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
    - "chat" для "в чате ...", "из чата ...", "чат ..."
    - "folder" для "в папке ...", "из папки ...", "папка ..."
 3. target_name: только имя цели без служебных слов, лишние кавычки/пробелы убери.
-4. query: исходный текст запроса пользователя целиком (как есть по смыслу; не сокращай до одного слова).
-5. mark_as_read=true, если есть явное намерение отметить прочитанным:
+4. folder_mode:
+   - "combined", если пользователь просит одну общую/единую сводку по всем чатам
+     или каналам папки, общий дайджест, топ-N новостей/тем из всех каналов папки,
+     либо один поиск/анализ по всей папке ("найди все упоминания ... в папке");
+   - "per_chat", если пользователь явно просит отдельный результат по каждому
+     чату/каналу;
+   - null, если цель не папка или режим явно не указан.
+5. query: исходный текст запроса пользователя целиком (как есть по смыслу; не сокращай до одного слова).
+6. mark_as_read=true, если есть явное намерение отметить прочитанным:
    "отметь/пометь как прочитанные", "mark as read", "read all", и т.п. Иначе false.
-6. requested_model:
+7. requested_model:
    - если пользователь явно просит использовать конкретную модель
      ("с помощью anthropic/claude-opus-4.6", "используй модель ...", "using model ..."),
      верни точный идентификатор модели строкой;
@@ -178,16 +186,17 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 1. Если явно есть "непрочитанные"/"unread", всегда period_type="unread", period_value=null.
 2. Если период не указан явно, верни period_type=null и period_value=null.
 3. Для period_type:
-   - "days": "за N дней", "за неделю" -> 7, "за сутки"/"вчера" -> 1
+   - "days": "за N дней", "за неделю" -> 7, "за сутки" -> 1
    - "hours": "за N часов", "за последний час" -> 1
    - "today": "сегодня"
+   - "yesterday": "вчера", "за вчера" (предыдущий календарный день)
    - "last_messages": "последние N сообщений"
 4. Для period_type в {"days","hours","last_messages"} period_value обязан быть целым числом > 0.
    В остальных случаях period_value=null.
 
 Расписание:
 1. Если расписание не указано, recurrence_type=null, interval_days=null, time=null.
-2. "каждый день"/"ежедневно" -> recurrence_type="daily"
+2. "каждый день"/"ежедневно"/"каждое утро"/"по утрам" -> recurrence_type="daily"
 3. "каждую неделю"/"еженедельно" -> recurrence_type="weekly"
 4. "каждый месяц"/"ежемесячно" -> recurrence_type="monthly"
 5. "раз в N дней" -> recurrence_type="interval_days", interval_days=N
@@ -198,39 +207,52 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 
 Самопроверка перед ответом:
 - JSON валиден;
-- есть все 10 ключей;
+- есть все 11 ключей;
 - типы значений соответствуют схеме;
 - никаких комментариев/текста вне JSON.
 
 Критичные уточнения:
-- "за вчера" и "за сутки" это period_type="days", period_value=1 (НЕ "today").
+- "за вчера"/"вчера" это period_type="yesterday", period_value=null.
+- "за сутки" это period_type="days", period_value=1.
 - Если нет явного запроса "непрочитанные", не ставь period_type="unread".
 - Если нет явного запроса "отметь как прочитанные", ставь mark_as_read=false.
 
 Примеры:
 Пользователь: "суммаризируй все чаты в папке AI за вчера"
 Ответ:
-{"target_type":"folder","target_name":"AI","period_type":"days","period_value":1,"mark_as_read":false,"query":"суммаризируй все чаты в папке AI за вчера","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":"yesterday","period_value":null,"mark_as_read":false,"query":"суммаризируй все чаты в папке AI за вчера","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "суммаризируй непрочитанные в чате Работа и отметь как прочитанные"
 Ответ:
-{"target_type":"chat","target_name":"Работа","period_type":"unread","period_value":null,"mark_as_read":true,"query":"суммаризируй непрочитанные в чате Работа и отметь как прочитанные","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"chat","target_name":"Работа","folder_mode":null,"period_type":"unread","period_value":null,"mark_as_read":true,"query":"суммаризируй непрочитанные в чате Работа и отметь как прочитанные","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "покажи последние 300 сообщений из чата Release"
 Ответ:
-{"target_type":"chat","target_name":"Release","period_type":"last_messages","period_value":300,"mark_as_read":false,"query":"покажи последние 300 сообщений из чата Release","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"chat","target_name":"Release","folder_mode":null,"period_type":"last_messages","period_value":300,"mark_as_read":false,"query":"покажи последние 300 сообщений из чата Release","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "суммаризируй чат DevOps каждый день в 20:00"
 Ответ:
-{"target_type":"chat","target_name":"DevOps","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй чат DevOps каждый день в 20:00","requested_model":null,"recurrence_type":"daily","interval_days":null,"time":"20:00"}
+{"target_type":"chat","target_name":"DevOps","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй чат DevOps каждый день в 20:00","requested_model":null,"recurrence_type":"daily","interval_days":null,"time":"20:00"}
 
 Пользователь: "суммаризируй папку AI раз в 3 дня в 19:30"
 Ответ:
-{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","requested_model":null,"recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
+{"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","requested_model":null,"recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
 
 Пользователь: "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
 Ответ:
-{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6","requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6","requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}
+
+Пользователь: "каждое утро в 10:00 сделай одну сводку топ-10 новостей по каналам из папки news за вчера"
+Ответ:
+{"target_type":"folder","target_name":"news","folder_mode":"combined","period_type":"yesterday","period_value":null,"mark_as_read":false,"query":"каждое утро в 10:00 сделай одну сводку топ-10 новостей по каналам из папки news за вчера","requested_model":null,"recurrence_type":"daily","interval_days":null,"time":"10:00"}
+
+Пользователь: "в папке news за вчера найти все упоминания складов WB"
+Ответ:
+{"target_type":"folder","target_name":"news","folder_mode":"combined","period_type":"yesterday","period_value":null,"mark_as_read":false,"query":"в папке news за вчера найти все упоминания складов WB","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
+
+Пользователь: "сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными"
+Ответ:
+{"target_type":"folder","target_name":"news","folder_mode":"combined","period_type":"unread","period_value":null,"mark_as_read":true,"query":"сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными","requested_model":null,"recurrence_type":null,"interval_days":null,"time":null}
 """
 
 PROCESSOR_PROMPT = """Ты - аналитик, который работает с историей Telegram чатов.

@@ -148,8 +148,22 @@ EMOJI_PATTERN = re.compile(
 )
 
 ALLOWED_TARGET_TYPES = {"chat", "folder", None}
-ALLOWED_PERIOD_TYPES = {"days", "hours", "today", "last_messages", "unread", None}
+ALLOWED_FOLDER_MODES = {"per_chat", "combined", None}
+ALLOWED_PERIOD_TYPES = {
+    "days",
+    "hours",
+    "today",
+    "yesterday",
+    "last_messages",
+    "unread",
+    None,
+}
 MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+URL_PATTERN = re.compile(r"https?://[^\s)<>\]]+")
+ORIGINAL_POST_LINK_PATTERN = re.compile(
+    r"\[Оригинал\]\((https://t\.me/[^\s)]+)\)\s*$",
+    flags=re.MULTILINE,
+)
 UNREAD_INTENT_PATTERN = re.compile(r"(непрочитан|unread)", flags=re.IGNORECASE)
 MARK_AS_READ_INTENT_PATTERN = re.compile(
     r"("
@@ -162,12 +176,35 @@ MARK_AS_READ_INTENT_PATTERN = re.compile(
 )
 SCHEDULE_INTENT_PATTERN = re.compile(
     r"\b("
-    r"кажд(?:ый|ую|ые|ое)\s+(?:день|недел\w*|месяц)"
+    r"кажд(?:ый|ую|ые|ое)\s+(?:день|недел\w*|месяц|утр\w*)"
+    r"|по\s+утрам"
     r"|ежедневно|еженедельно|ежемесячно"
     r"|раз\s+в\s+\d+\s*(?:дн|дня|дней)"
     r"|every\s+(?:day|week|month)"
     r"|daily|weekly|monthly"
     r")\b",
+    flags=re.IGNORECASE,
+)
+COMBINED_FOLDER_PATTERN = re.compile(
+    r"("
+    r"(?:общ\w+|един\w+)\s+(?:сводк\w*|саммар\w*|дайджест\w*)"
+    r"|(?:топ|top)[-\s]?\d+.*?(?:из|по|среди)\s+(?:вс\w*\s+)?"
+    r"(?:непрочитан\w+\s+)?(?:чат\w*|канал\w*)"
+    r"|(?:из|среди|по)\s+вс\w*\s+(?:непрочитан\w+\s+)?(?:чат\w*|канал\w*)"
+    r"|папк\w*.*?(?:найди|найти|собери|собрать|покажи|показать)\s+все\s+"
+    r"(?:упоминан\w*|сообщени\w*|факт\w*|новост\w*)"
+    r"|(?:найди|найти|собери|собрать|покажи|показать)\s+все\s+"
+    r"(?:упоминан\w*|сообщени\w*|факт\w*|новост\w*).*?папк\w*"
+    r"|(?:по|из)\s+(?:чат\w*|канал\w*)\s+(?:из\s+)?папк\w*.*?(?:вместе|сразу|общ\w*)"
+    r")",
+    flags=re.IGNORECASE,
+)
+PER_CHAT_FOLDER_PATTERN = re.compile(
+    r"("
+    r"по\s+кажд\w+\s+(?:чат\w*|канал\w*)\s+отдельно"
+    r"|отдельн\w+\s+(?:сводк\w*|саммар\w*)\s+по\s+(?:чат\w*|канал\w*)"
+    r"|кажд\w+\s+(?:чат\w*|канал\w*)\s+отдельно"
+    r")",
     flags=re.IGNORECASE,
 )
 SUMMARY_ARTIFACT_PATTERN = re.compile(
@@ -248,6 +285,8 @@ def format_period_text(period_type: Optional[str], period_value: Optional[int]) 
         return f"последние {period_value} {'час' if period_value == 1 else 'часов'}"
     elif period_type == "today":
         return "сегодня"
+    elif period_type == "yesterday":
+        return "вчера (календарный день)"
     elif period_type == "last_messages" and period_value:
         return f"последние {period_value} сообщений"
     elif period_type == "unread":
@@ -319,7 +358,9 @@ def _infer_period_from_text(text: Optional[str]) -> tuple[Optional[str], Optiona
 
     if "сегодня" in haystack:
         return "today", None
-    if re.search(r"\b(вчера|за\s+вчера|за\s+сутк\w*)\b", haystack):
+    if re.search(r"\b(вчера|за\s+вчера)\b", haystack):
+        return "yesterday", None
+    if re.search(r"\bза\s+сутк\w*\b", haystack):
         return "days", 1
     if re.search(r"\bза\s+недел\w*\b", haystack):
         return "days", 7
@@ -341,6 +382,43 @@ def _infer_period_from_text(text: Optional[str]) -> tuple[Optional[str], Optiona
         return "days", int(m.group(1))
 
     return None, None
+
+
+def _infer_folder_mode(text: Optional[str]) -> Optional[str]:
+    haystack = text or ""
+    if PER_CHAT_FOLDER_PATTERN.search(haystack):
+        return "per_chat"
+    if COMBINED_FOLDER_PATTERN.search(haystack):
+        return "combined"
+    return None
+
+
+def resolve_folder_mode(
+    *,
+    user_message: Optional[str],
+    target_type: Optional[str],
+    parsed_folder_mode: Optional[str],
+) -> Optional[str]:
+    """Возвращает безопасный итоговый режим обработки папки."""
+    if target_type != "folder":
+        return None
+
+    explicit_mode = _infer_folder_mode(user_message)
+    if explicit_mode and explicit_mode != parsed_folder_mode:
+        logger.warning(
+            "⚠️ Исправляю folder_mode по явному интенту текста: %s -> %s",
+            parsed_folder_mode,
+            explicit_mode,
+        )
+        return explicit_mode
+
+    if parsed_folder_mode == "combined" and explicit_mode != "combined":
+        logger.warning(
+            "⚠️ Игнорирую folder_mode=combined без явного aggregate-intent"
+        )
+        return "per_chat"
+
+    return parsed_folder_mode or "per_chat"
 
 
 def _apply_parser_intent_guards(
@@ -662,22 +740,10 @@ def _cleanup_summary_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _looks_like_summary_request(text: Optional[str]) -> bool:
-    haystack = (text or "").lower()
-    return bool(
-        re.search(
-            r"(суммариз|саммар|саммари|summary|выжимк|кратк\w+\s+сводк\w+)",
-            haystack,
-        )
-    )
-
-
 def _build_analysis_query(query: Optional[str]) -> str:
     text = " ".join((query or "").split())
     if not text:
         return "Сделай краткое саммари переписки по делу."
-    if not _looks_like_summary_request(text):
-        return text
 
     cleaned = text
     cleaned = re.sub(
@@ -698,7 +764,8 @@ def _build_analysis_query(query: Optional[str]) -> str:
     )
     cleaned = re.sub(
         r"(?i)(?:,?\s*)\b(?:кажд\w+\s+(?:день|недел\w*|месяц)|"
-        r"ежедневно|еженедельно|ежемесячно|раз\s+в\s+\d+\s+дн\w*)(?:\s+в\s+\d{1,2}:\d{2})?",
+        r"кажд\w+\s+утр\w*|по\s+утрам|ежедневно|еженедельно|ежемесячно|"
+        r"раз\s+в\s+\d+\s+дн\w*)(?:\s+в\s+\d{1,2}:\d{2})?",
         "",
         cleaned,
     )
@@ -809,6 +876,7 @@ def _format_recognized_command(
     *,
     target_type: str,
     target_name: str,
+    folder_mode: Optional[str],
     period_type: Optional[str],
     period_value: Optional[int],
     query: Optional[str],
@@ -843,6 +911,7 @@ def _format_recognized_command(
     return (
         "🧭 Распознано:\n"
         f"• Цель: {target_type} '{target_name}'\n"
+        f"• Режим папки: {folder_mode or '-'}\n"
         f"• Источник цели: {target_source}\n"
         f"• Период: {period_text}\n"
         f"• Источник периода: {period_source}\n"
@@ -1395,7 +1464,8 @@ async def parse_command_with_gpt(user_message: str) -> Dict[str, Any]:
         {
             "target_type": "chat" | "folder" | null,
             "target_name": "название чата/папки" | null,
-            "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | null,
+            "folder_mode": "per_chat" | "combined" | null,
+            "period_type": "days" | "hours" | "today" | "yesterday" | "last_messages" | "unread" | null,
             "period_value": число дней/часов/сообщений | null,
             "mark_as_read": true | false,
             "query": "полный текст запроса пользователя",
@@ -1441,6 +1511,10 @@ def validate_command_payload(command: dict) -> Dict[str, Any]:
         if not isinstance(target_name, str):
             raise ValueError("target_name должен быть строкой или null")
         target_name = target_name.strip() or None
+
+    folder_mode = command.get("folder_mode")
+    if folder_mode not in ALLOWED_FOLDER_MODES:
+        raise ValueError(f"Некорректный folder_mode: {folder_mode}")
 
     period_type = command.get("period_type")
     if period_type not in ALLOWED_PERIOD_TYPES:
@@ -1507,6 +1581,7 @@ def validate_command_payload(command: dict) -> Dict[str, Any]:
     return {
         "target_type": target_type,
         "target_name": target_name,
+        "folder_mode": folder_mode,
         "period_type": period_type,
         "period_value": period_value,
         "mark_as_read": mark_as_read,
@@ -1594,6 +1669,12 @@ def _validate_schedule_record(record: dict) -> tuple[bool, str]:
 
     if not (record.get("target_name") or "").strip():
         return False, "отсутствует target_name"
+
+    folder_mode = record.get("folder_mode")
+    if folder_mode not in {None, "per_chat", "combined"}:
+        return False, "некорректный folder_mode"
+    if record.get("target_type") != "folder" and folder_mode is not None:
+        return False, "folder_mode допустим только для target_type=folder"
 
     return True, ""
 
@@ -1772,6 +1853,7 @@ async def _execute_scheduled_summary(
 
     target_type = record.get("target_type")
     target_name = record.get("target_name")
+    folder_mode = record.get("folder_mode") or "per_chat"
     period_type = record.get("period_type")
     period_value = record.get("period_value")
     query = record.get("query") or "Суммаризируй"
@@ -1794,16 +1876,25 @@ async def _execute_scheduled_summary(
     total = len(chats_to_process)
     llm_operation_stats: dict[str, dict[str, int]] = {}
 
+    if target_type == "folder" and folder_mode == "combined":
+        combined_processed, combined_skipped = await _process_combined_folder(
+            update_proxy,
+            processing_msg,
+            chats_to_process,
+            target_name,
+            period_type,
+            period_value,
+            query,
+            mark_as_read,
+            requested_model,
+            llm_operation_stats,
+        )
+        return combined_processed, combined_skipped, llm_operation_stats
+
     for idx, chat_data in enumerate(chats_to_process, 1):
-        if len(chat_data) == 4:
-            chat_entity, chat_name, unread_count, read_inbox_max_id = chat_data
-        elif len(chat_data) == 3:
-            chat_entity, chat_name, unread_count = chat_data
-            read_inbox_max_id = None
-        else:
-            chat_entity, chat_name = chat_data
-            unread_count = None
-            read_inbox_max_id = None
+        chat_entity, chat_name, unread_count, read_inbox_max_id = _unpack_chat_data(
+            chat_data
+        )
         try:
             success = await _process_single_chat(
                 update_proxy,
@@ -2630,15 +2721,19 @@ def _get_dialog_unread_state(dialog) -> tuple[int, Optional[int]]:
 
 
 async def get_chat_history(
-    chat_entity, period_type: str = None, period_value: Any = None
+    chat_entity,
+    period_type: str = None,
+    period_value: Any = None,
+    include_message_links: bool = False,
 ) -> tuple[str, Optional[int]]:
     """
     Получает историю сообщений из чата за указанный период
 
     Args:
         chat_entity: Entity чата из Telethon
-        period_type: Тип периода ("days", "hours", "today", "last_messages", None)
+        period_type: Тип периода ("days", "hours", "today", "yesterday", "last_messages", None)
         period_value: Значение периода (количество дней/часов/сообщений)
+        include_message_links: Добавлять permalink оригинального поста к сообщению
 
     Returns:
         Tuple (отформатированная история переписки, ID первого сообщения в выборке)
@@ -2656,6 +2751,7 @@ async def get_chat_history(
 
         messages = []
         offset_date = None
+        end_date = None
         limit = None
         min_id = None
 
@@ -2687,6 +2783,20 @@ async def get_chat_history(
             offset_date = midnight_local.astimezone(timezone.utc)
             logger.info(
                 "📅 Загружаю сообщения с начала суток (00:00 локального времени)"
+            )
+
+        elif period_type == "yesterday":
+            now_local = datetime.now().astimezone()
+            today_start_local = now_local.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            yesterday_start_local = today_start_local - timedelta(days=1)
+            offset_date = yesterday_start_local.astimezone(timezone.utc)
+            end_date = today_start_local.astimezone(timezone.utc)
+            logger.info(
+                "📅 Загружаю сообщения за предыдущий календарный день: %s — %s",
+                yesterday_start_local.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                today_start_local.strftime("%Y-%m-%d %H:%M:%S %Z"),
             )
 
         elif period_type == "last_messages" and period_value:
@@ -2724,6 +2834,11 @@ async def get_chat_history(
             logger.debug(f"  min_id: {min_id}")
         collected_messages: list[tuple[int, str]] = []
         async for message in telethon_client.iter_messages(chat_entity, **iter_params):
+            message_date = message.date
+            if message_date.tzinfo is None:
+                message_date = message_date.replace(tzinfo=timezone.utc)
+            if end_date is not None and message_date >= end_date:
+                continue
             if message.text:
                 sender_name = (
                     get_chat_display_name(message.sender)
@@ -2732,10 +2847,21 @@ async def get_chat_history(
                 )
 
                 # Конвертируем UTC время в локальное
-                local_time = utc_to_local(message.date)
+                local_time = utc_to_local(message_date)
                 timestamp = local_time.strftime("%Y-%m-%d %H:%M:%S")
+                original_link = (
+                    generate_channel_link(chat_entity, message_id=message.id)
+                    if include_message_links
+                    else None
+                )
+                link_suffix = (
+                    f" [Оригинал]({original_link})" if original_link else ""
+                )
                 collected_messages.append(
-                    (message.id, f"[{timestamp}] {sender_name}: {message.text}")
+                    (
+                        message.id,
+                        f"[{timestamp}] {sender_name}: {message.text}{link_suffix}",
+                    )
                 )
 
         if not collected_messages:
@@ -2765,6 +2891,7 @@ async def _process_chat_with_openai_result(
     period_context: str = None,
     rate_limit_notifier: Optional[Any] = None,
     requested_model: Optional[str] = None,
+    required_source_urls: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """
     Обрабатывает историю чата согласно запросу пользователя
@@ -2797,9 +2924,22 @@ async def _process_chat_with_openai_result(
 
         def summary_validator(content: str, candidate) -> Optional[str]:
             score, issues = _analyze_summary_quality(content, chat_history)
-            if score <= 0:
-                return None
-            return "; ".join(issues) or "подозрительное качество саммари"
+            if score > 0:
+                return "; ".join(issues) or "подозрительное качество саммари"
+
+            if required_source_urls:
+                response_urls = set(URL_PATTERN.findall(content or ""))
+                if not response_urls.intersection(required_source_urls):
+                    return "нет точной ссылки на исходный пост"
+                invented_telegram_urls = {
+                    url
+                    for url in response_urls
+                    if url.startswith(("https://t.me/", "http://t.me/"))
+                    and url not in required_source_urls
+                }
+                if invented_telegram_urls:
+                    return "ответ содержит ссылку Telegram, которой нет в истории"
+            return None
 
         candidates_override = None
         max_attempts_override = None
@@ -2822,7 +2962,7 @@ async def _process_chat_with_openai_result(
         answer = _cleanup_summary_text(answer)
         if used_model:
             answer = f"{answer}\n\nМодель: `{used_model}`"
-        return {"answer": answer, "stats": llm_stats}
+        return {"answer": answer, "stats": llm_stats, "ok": True}
 
     except Exception as e:
         error_msg = str(e)
@@ -2834,8 +2974,9 @@ async def _process_chat_with_openai_result(
                     f"`{requested_model}` после 3 попыток: {error_msg}"
                 ),
                 "stats": {},
+                "ok": False,
             }
-        return {"answer": f"❌ {error_msg}", "stats": {}}
+        return {"answer": f"❌ {error_msg}", "stats": {}, "ok": False}
 
 
 async def process_chat_with_openai(
@@ -2938,9 +3079,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Для папок:**\n"
         "• 'Что нового в папке Рабочие чаты?'\n"
         "• 'Суммаризируй папку Личное за неделю и пометь прочитанным'\n"
-        "• 'До чего договорились в папке Проекты?'\n\n"
+        "• 'До чего договорились в папке Проекты?'\n"
+        "• 'В папке news за вчера найди все упоминания складов WB'\n\n"
         "🗓️ Периодические задачи можно задавать обычным текстом:\n"
         "• 'Суммаризируй папку AI каждый день в 20:00 и отмечай прочитанным'\n\n"
+        "• 'Каждое утро в 10:00 сделай топ-10 новостей по всем каналам "
+        "из папки news за вчера'\n\n"
+        "🔗 В общей сводке по папке бот добавляет ссылки на исходные посты.\n"
         "💡 Если не указывать чат/папку/период, буду использовать предыдущий!\n"
         "📖 Добавь 'и отметь прочитанным' для автоматической пометки сообщений!\n\n"
         f"{format_llm_settings_text()}\n\n"
@@ -2973,11 +3118,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Примеры для папок:**\n"
         "• Что нового в папке Рабочие чаты?\n"
         "• Суммаризируй папку Личное за неделю и пометь прочитанным\n"
-        "• До чего договорились в папке Проекты?\n\n"
+        "• До чего договорились в папке Проекты?\n"
+        "• В папке news за вчера найди все упоминания складов WB\n"
+        "• Сделай топ-10 новостей по всем непрочитанным каналам в папке news "
+        "и отметь их прочитанными\n\n"
         "**Периодические задачи:**\n"
         "• Суммаризируй папку AI каждый день в 20:00\n"
         "• Суммаризируй чат Работа каждую неделю в 09:00\n"
-        "• Суммаризируй папку Новости раз в 3 дня в 19:30\n\n"
+        "• Суммаризируй папку Новости раз в 3 дня в 19:30\n"
+        "• Каждое утро в 10:00 сделай топ-10 новостей по всем каналам "
+        "из папки news за вчера\n\n"
+        "🔗 Общий режим папки возвращает ссылки на использованные исходные посты.\n"
         "💡 Бот запоминает последний чат/папку и период!\n"
         "📖 Добавь 'и отметь прочитанным' для автоматической пометки!\n\n"
         f"{format_llm_settings_text()}\n\n"
@@ -3301,6 +3452,7 @@ async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• ID: {rec.get('id')}\n"
             f"  Chat ID: {rec.get('chat_id')}\n"
             f"  Цель: {rec.get('target_type')} '{rec.get('target_name')}'\n"
+            f"  Режим папки: {rec.get('folder_mode') or 'per_chat'}\n"
             f"  Период: {period_text}\n"
             f"  Запрос: {_compact_query_for_display(rec.get('query'))}\n"
             f"  Модель: {rec.get('requested_model') or 'по конфигу'}\n"
@@ -3364,6 +3516,10 @@ def generate_channel_link(entity, message_id: int = None) -> str:
     # Это ограничение Telegram API - для приватных обычных групп нельзя создать ссылку
     if isinstance(entity, Chat):
         logger.debug(f"ℹ️ Обычная группа (Chat) '{entity.title}' - ссылка недоступна")
+        return None
+
+    if isinstance(entity, User):
+        logger.debug("ℹ️ Для личного диалога без username permalink недоступен")
         return None
 
     # Для супергрупп и каналов (Channel)
@@ -3518,6 +3674,150 @@ async def _resolve_single_chat(
     return [(chat_entity, found_name, unread_count, read_inbox_max_id)], found_name, None
 
 
+def _unpack_chat_data(chat_data) -> tuple[Any, str, Optional[int], Optional[int]]:
+    if len(chat_data) == 4:
+        return chat_data[0], chat_data[1], chat_data[2], chat_data[3]
+    if len(chat_data) == 3:
+        return chat_data[0], chat_data[1], chat_data[2], None
+    return chat_data[0], chat_data[1], None, None
+
+
+async def _process_combined_folder(
+    update: Update,
+    processing_msg,
+    chats_to_process: list,
+    folder_name: str,
+    period_type,
+    period_value,
+    query: str,
+    mark_as_read: bool,
+    requested_model: Optional[str] = None,
+    llm_stats_accumulator: Optional[dict[str, dict[str, int]]] = None,
+) -> tuple[int, int]:
+    """Загружает истории всех чатов папки и отправляет их в один LLM-запрос."""
+    history_blocks: list[str] = []
+    source_urls: set[str] = set()
+    processed_sources: list[tuple[Any, str]] = []
+    skipped_count = 0
+    total = len(chats_to_process)
+
+    for idx, chat_data in enumerate(chats_to_process, 1):
+        chat_entity, chat_name, unread_count, read_inbox_max_id = _unpack_chat_data(
+            chat_data
+        )
+        await processing_msg.edit_text(
+            f"Загружаю чат {idx}/{total} для общей сводки: '{chat_name}'... 📥"
+        )
+
+        effective_period_type = period_type
+        effective_period_value = period_value
+        if period_type == "unread":
+            if unread_count is not None and unread_count <= 0:
+                skipped_count += 1
+                continue
+            effective_period_value = {
+                "limit": unread_count
+                if unread_count is not None
+                else config.DEFAULT_MESSAGES_LIMIT,
+                "read_inbox_max_id": read_inbox_max_id,
+            }
+
+        try:
+            chat_history, first_message_id = await get_chat_history(
+                chat_entity,
+                effective_period_type,
+                effective_period_value,
+                include_message_links=True,
+            )
+        except Exception as e:
+            logger.error(
+                "❌ Не удалось загрузить '%s' для общей сводки: %s",
+                chat_name,
+                e,
+            )
+            skipped_count += 1
+            continue
+
+        if not chat_history or first_message_id is None:
+            skipped_count += 1
+            if mark_as_read and period_type == "unread" and (unread_count or 0) > 0:
+                await mark_chat_as_read(chat_entity)
+            continue
+
+        source_link = generate_channel_link(chat_entity, message_id=first_message_id)
+        source_label = chat_name
+        if source_link:
+            source_label = f"[{chat_name}]({source_link})"
+        history_blocks.append(
+            f"=== ИСТОЧНИК {idx}: {source_label} ===\n{chat_history}"
+        )
+        source_urls.update(ORIGINAL_POST_LINK_PATTERN.findall(chat_history))
+        processed_sources.append((chat_entity, chat_name))
+
+    if not history_blocks:
+        await update.message.reply_text(
+            f"📭 В папке '{folder_name}' нет текстовых сообщений за выбранный период."
+        )
+        return 0, skipped_count
+
+    period_text = format_period_text(period_type, period_value)
+    await processing_msg.edit_text(
+        f"Анализирую {len(processed_sources)} источников папки '{folder_name}' одним запросом... 💭"
+    )
+    combined_query = (
+        f"{query}\n\n"
+        "Сформируй один общий результат по всем источникам вместе. "
+        "Не делай отдельное саммари каждого канала. Сопоставляй и дедуплицируй "
+        "повторяющиеся события. Для каждого пункта обязательно укажи исходный "
+        "канал или каналы и добавь точные markdown-ссылки [оригинал](URL) на "
+        "релевантные исходные посты из истории. Если событие подтверждают "
+        "несколько постов, приведи несколько ссылок. Не выдумывай URL."
+    )
+    llm_result = await _process_chat_with_openai_result(
+        "\n\n".join(history_blocks),
+        combined_query,
+        f"{period_text}; источников: {len(processed_sources)}",
+        requested_model=requested_model,
+        required_source_urls=source_urls or None,
+    )
+    result = llm_result.get("answer", "")
+    analysis_ok = bool(llm_result.get("ok", True))
+    _merge_llm_stats(llm_stats_accumulator, llm_result.get("stats"))
+
+    safe_folder_name = html.escape(folder_name)
+    safe_period_text = html.escape(period_text)
+    result_prefix = (
+        f"🗞️ <b>Общая сводка по папке «{safe_folder_name}»</b>"
+        f" ({safe_period_text}):\n\n"
+    )
+    html_result = _render_markdownish_to_telegram_html(result)
+    full_message = result_prefix + html_result
+    if len(full_message) <= 4096:
+        await _reply_text_html_or_plain(update.message, full_message)
+    else:
+        await _reply_text_html_or_plain(update.message, result_prefix)
+        for chunk in _split_text_chunks(result, 3500):
+            await _reply_text_html_or_plain(
+                update.message, _render_markdownish_to_telegram_html(chunk)
+            )
+
+    if mark_as_read and analysis_ok:
+        for chat_entity, chat_name in processed_sources:
+            if not await mark_chat_as_read(chat_entity):
+                logger.warning(
+                    "⚠️ Не удалось отметить чат '%s' как прочитанный", chat_name
+                )
+    elif mark_as_read:
+        logger.warning(
+            "⚠️ Не отмечаю источники папки '%s' прочитанными: LLM-анализ завершился ошибкой",
+            folder_name,
+        )
+
+    if not analysis_ok:
+        return 0, skipped_count + len(processed_sources)
+    return len(processed_sources), skipped_count
+
+
 async def _process_single_chat(
     update: Update,
     processing_msg,
@@ -3604,6 +3904,7 @@ async def _process_single_chat(
         requested_model=requested_model,
     )
     result = llm_result.get("answer", "")
+    analysis_ok = bool(llm_result.get("ok", True))
     _merge_llm_stats(llm_stats_accumulator, llm_result.get("stats"))
 
     # Генерируем ссылку на чат (ведет на первое суммаризированное сообщение)
@@ -3635,14 +3936,18 @@ async def _process_single_chat(
             )
 
     # Если нужно отметить прочитанным
-    if mark_as_read:
+    if mark_as_read and analysis_ok:
         read_success = await mark_chat_as_read(chat_entity)
         if read_success:
             logger.info(f"✅ Чат '{chat_name}' отмечен как прочитанный")
         else:
             logger.warning(f"⚠️ Не удалось отметить чат '{chat_name}' как прочитанный")
+    elif mark_as_read:
+        logger.warning(
+            f"⚠️ Не отмечаю чат '{chat_name}' прочитанным: LLM-анализ завершился ошибкой"
+        )
 
-    return True
+    return analysis_ok
 
 
 @admin_only
@@ -3694,6 +3999,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         # Шаг 2: Извлекаем параметры команды
         target_type = command.get("target_type")  # "chat" | "folder" | null
         target_name = command.get("target_name")  # название чата/папки
+        folder_mode = command.get("folder_mode")
         period_type = command.get("period_type")
         period_value = command.get("period_value")
         mark_as_read = command.get(
@@ -3745,6 +4051,12 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if not target_type:
             target_type = "chat"
 
+        folder_mode = resolve_folder_mode(
+            user_message=user_message,
+            target_type=target_type,
+            parsed_folder_mode=folder_mode,
+        )
+
         # Определяем итоговый период (с учетом контекста и unread-эвристики)
         parsed_period_type = period_type
         period_type, period_value = resolve_period_with_context(
@@ -3771,6 +4083,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             _format_recognized_command(
                 target_type=target_type,
                 target_name=target_name,
+                folder_mode=folder_mode,
                 period_type=period_type,
                 period_value=period_value,
                 query=query,
@@ -3820,6 +4133,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                     mark_as_read=mark_as_read,
                     chat_id=update.effective_chat.id,
                     schedule_spec=schedule_spec,
+                    folder_mode=folder_mode,
                     now_local=now,
                 )
                 await _append_schedule_record(schedule_record)
@@ -3839,6 +4153,7 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 "✅ Периодическая суммаризация сохранена.\n\n"
                 f"ID: {schedule_record['id']}\n"
                 f"Цель: {target_type} '{target_name}'\n"
+                f"Режим папки: {folder_mode or '-'}\n"
                 f"Период суммаризации: {format_period_text(period_type, period_value)}\n"
                 f"Модель: {requested_model or 'по конфигу'}\n"
                 f"Расписание: {recurrence_to_text(schedule_record)}\n"
@@ -3875,43 +4190,54 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
         total = len(chats_to_process)
         llm_operation_stats: dict[str, dict[str, int]] = {}
 
-        for idx, chat_data in enumerate(chats_to_process, 1):
-            if len(chat_data) == 4:
-                chat_entity, chat_name, unread_count, read_inbox_max_id = chat_data
-            elif len(chat_data) == 3:
-                chat_entity, chat_name, unread_count = chat_data
-                read_inbox_max_id = None
-            else:
-                chat_entity, chat_name = chat_data
-                unread_count = None
-                read_inbox_max_id = None
-            try:
-                success = await _process_single_chat(
-                    update,
-                    processing_msg,
+        if target_type == "folder" and folder_mode == "combined":
+            processed_count, skipped_count = await _process_combined_folder(
+                update,
+                processing_msg,
+                chats_to_process,
+                resolved_name or target_name,
+                period_type,
+                period_value,
+                query,
+                mark_as_read,
+                requested_model,
+                llm_operation_stats,
+            )
+        else:
+            for idx, chat_data in enumerate(chats_to_process, 1):
+                (
                     chat_entity,
                     chat_name,
-                    idx,
-                    total,
-                    period_type,
-                    period_value,
-                    query,
-                    mark_as_read,
-                    requested_model,
                     unread_count,
                     read_inbox_max_id,
-                    llm_operation_stats,
-                )
-                if success:
-                    processed_count += 1
-                else:
+                ) = _unpack_chat_data(chat_data)
+                try:
+                    success = await _process_single_chat(
+                        update,
+                        processing_msg,
+                        chat_entity,
+                        chat_name,
+                        idx,
+                        total,
+                        period_type,
+                        period_value,
+                        query,
+                        mark_as_read,
+                        requested_model,
+                        unread_count,
+                        read_inbox_max_id,
+                        llm_operation_stats,
+                    )
+                    if success:
+                        processed_count += 1
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при обработке чата '{chat_name}': {e}")
+                    await update.message.reply_text(
+                        f"❌ Ошибка при обработке чата '{chat_name}': {str(e)[:200]}"
+                    )
                     skipped_count += 1
-            except Exception as e:
-                logger.error(f"❌ Ошибка при обработке чата '{chat_name}': {e}")
-                await update.message.reply_text(
-                    f"❌ Ошибка при обработке чата '{chat_name}': {str(e)[:200]}"
-                )
-                skipped_count += 1
 
         # Удаляем сообщение о процессе
         await processing_msg.delete()

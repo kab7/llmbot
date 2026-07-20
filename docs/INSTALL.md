@@ -21,8 +21,9 @@ cd llmbot
 `setup.sh`:
 
 1. changes to the repository root, so it can be called from another directory;
-2. selects `PYTHON_BIN` when supplied, otherwise tries Python 3.12, 3.13, 3.11,
-   and `python3`;
+2. reuses an existing healthy supported `venv` unless recreation or
+   `PYTHON_BIN` was requested; otherwise selects `PYTHON_BIN` when supplied,
+   then tries Python 3.12, 3.13, 3.11, and `python3`;
 3. checks whether `venv/bin/python`, its version, and pip are healthy;
 4. rebuilds an unhealthy environment with `python -m venv --clear`;
 5. upgrades pip and installs runtime dependencies;

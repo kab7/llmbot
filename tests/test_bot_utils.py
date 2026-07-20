@@ -16,6 +16,7 @@ def test_format_period_text_variants():
     assert bot.format_period_text("hours", 1) == "последние 1 час"
     assert bot.format_period_text("hours", 4) == "последние 4 часов"
     assert bot.format_period_text("today", None) == "сегодня"
+    assert bot.format_period_text("yesterday", None) == "вчера (календарный день)"
     assert bot.format_period_text("last_messages", 50) == "последние 50 сообщений"
     assert bot.format_period_text("unread", None) == "непрочитанные сообщения"
     assert "последние" in bot.format_period_text(None, None)
@@ -183,6 +184,12 @@ def test_validate_command_payload_variants():
     assert normalized["mark_as_read"] is False
     assert normalized["query"] == "summarize"
     assert normalized["requested_model"] is None
+    assert normalized["folder_mode"] is None
+
+    combined = bot.validate_command_payload(
+        payload | {"target_type": "folder", "folder_mode": "combined"}
+    )
+    assert combined["folder_mode"] == "combined"
 
     bad_target = payload | {"target_type": "invalid"}
     try:
@@ -202,6 +209,12 @@ def test_validate_command_payload_variants():
     normalized_unread = bot.validate_command_payload(unread_payload)
     assert normalized_unread["period_type"] == "unread"
     assert normalized_unread["period_value"] is None
+
+    try:
+        bot.validate_command_payload(payload | {"folder_mode": "merged"})
+        raise AssertionError("expected ValueError")
+    except ValueError as e:
+        assert "folder_mode" in str(e)
 
 
 def test_resolve_period_with_context_unread_and_fallback():
@@ -431,6 +444,19 @@ def test_build_analysis_query_strips_schedule_and_mark_as_read():
     assert "10:00" not in cleaned
     assert "суммаризируй все непрочитанные чаты в папке AI" in cleaned
 
+    morning_cleaned = bot._build_analysis_query(
+        "каждое утро в 10:00 сделай сводку топ-10 новостей по каналам из папки news"
+    )
+    assert "каждое утро" not in morning_cleaned.lower()
+    assert "10:00" not in morning_cleaned
+    assert "топ-10 новостей" in morning_cleaned
+
+    search_cleaned = bot._build_analysis_query(
+        "в папке news найди все упоминания WB и отметь их как прочитанные"
+    )
+    assert "найди все упоминания WB" in search_cleaned
+    assert "отметь их как прочитанные" not in search_cleaned.lower()
+
 
 def test_build_analysis_query_strips_requested_model_clause():
     query = "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
@@ -448,6 +474,8 @@ def test_compact_query_for_display():
 
 def test_looks_like_schedule_request_variants():
     assert bot._looks_like_schedule_request("суммаризируй каждый день в 20:00")
+    assert bot._looks_like_schedule_request("делай сводку каждое утро в 10:00")
+    assert bot._looks_like_schedule_request("присылай дайджест по утрам в 09:00")
     assert bot._looks_like_schedule_request("раз в 3 дня в 19:30")
     assert bot._looks_like_schedule_request("weekly summary at 10:00")
     assert not bot._looks_like_schedule_request("суммаризируй чат работа")
@@ -499,8 +527,8 @@ def test_apply_parser_intent_guards_fixes_hallucinated_unread_and_mark():
     )
 
     assert target_type == "folder"
-    assert period_type == "days"
-    assert period_value == 1
+    assert period_type == "yesterday"
+    assert period_value is None
     assert mark_as_read is False
 
 
@@ -542,9 +570,52 @@ def test_apply_parser_intent_guards_corrects_explicit_yesterday_from_today():
     )
 
     assert target_type == "folder"
-    assert period_type == "days"
-    assert period_value == 1
+    assert period_type == "yesterday"
+    assert period_value is None
     assert mark_as_read is False
+
+
+def test_resolve_folder_mode_for_cross_folder_queries():
+    assert (
+        bot.resolve_folder_mode(
+            user_message="суммаризируй папку AI",
+            target_type="folder",
+            parsed_folder_mode=None,
+        )
+        == "per_chat"
+    )
+    assert (
+        bot.resolve_folder_mode(
+            user_message="в папке news за вчера найти все упоминания складов WB",
+            target_type="folder",
+            parsed_folder_mode=None,
+        )
+        == "combined"
+    )
+    assert (
+        bot.resolve_folder_mode(
+            user_message="сделай топ-10 новостей по всем непрочитанным каналам в папке news",
+            target_type="folder",
+            parsed_folder_mode=None,
+        )
+        == "combined"
+    )
+    assert (
+        bot.resolve_folder_mode(
+            user_message="сделай отдельное саммари по каждому каналу отдельно",
+            target_type="folder",
+            parsed_folder_mode="combined",
+        )
+        == "per_chat"
+    )
+    assert (
+        bot.resolve_folder_mode(
+            user_message="суммаризируй чат Work",
+            target_type="chat",
+            parsed_folder_mode="combined",
+        )
+        is None
+    )
 
 
 def test_init_scheduler_recomputes_stale_next_run(monkeypatch):

@@ -317,6 +317,130 @@ def test_process_user_message_aggregates_llm_stats_for_folder(monkeypatch, tmp_p
     )
 
 
+def test_process_user_message_routes_cross_folder_query_to_combined_mode(
+    monkeypatch, tmp_path
+):
+    _reset_runtime(monkeypatch, tmp_path / ".env")
+    update = DummyUpdate(
+        user_id=1,
+        text="в папке news за вчера найти все упоминания складов WB",
+    )
+    bot.current_context.clear()
+    calls = {}
+
+    async def fake_parse_command(_user_message):
+        return {
+            "target_type": "folder",
+            "target_name": "news",
+            "folder_mode": "combined",
+            "period_type": "yesterday",
+            "period_value": None,
+            "mark_as_read": False,
+            "query": "найти все упоминания складов WB",
+            "requested_model": None,
+            "recurrence_type": None,
+            "interval_days": None,
+            "time": None,
+        }
+
+    async def fake_resolve_folder(target_name, processing_msg):
+        return [(object(), "One"), (object(), "Two")], target_name, None
+
+    async def fake_combined(
+        update_obj,
+        processing_msg,
+        chats_to_process,
+        folder_name,
+        period_type,
+        period_value,
+        query,
+        mark_as_read,
+        requested_model=None,
+        llm_stats_accumulator=None,
+    ):
+        calls["args"] = (
+            len(chats_to_process),
+            folder_name,
+            period_type,
+            query,
+            mark_as_read,
+        )
+        return 2, 0
+
+    async def fail_single(*args, **kwargs):
+        raise AssertionError("per-chat mode must not run")
+
+    monkeypatch.setattr(bot, "parse_command_with_gpt", fake_parse_command)
+    monkeypatch.setattr(bot, "_resolve_folder_chats", fake_resolve_folder)
+    monkeypatch.setattr(bot, "_process_combined_folder", fake_combined)
+    monkeypatch.setattr(bot, "_process_single_chat", fail_single)
+
+    asyncio.run(bot.process_user_message(update, DummyContext()))
+
+    assert calls["args"] == (
+        2,
+        "news",
+        "yesterday",
+        "найти все упоминания складов WB",
+        False,
+    )
+    reply_texts = [text for text, _ in update.message.replies]
+    recognized = next(text for text in reply_texts if text.startswith("🧭 Распознано:"))
+    assert "Режим папки: combined" in recognized
+    assert reply_texts[-1].startswith("✅ Обработано чатов: 2")
+
+
+def test_process_user_message_persists_combined_morning_schedule(
+    monkeypatch, tmp_path
+):
+    _reset_runtime(monkeypatch, tmp_path / ".env")
+    update = DummyUpdate(
+        user_id=1,
+        text=(
+            "каждое утро в 10:00 сделай топ-10 новостей по всем каналам "
+            "из папки news за вчера"
+        ),
+    )
+    bot.current_context.clear()
+    saved = []
+    scheduled = []
+
+    async def fake_parse_command(_user_message):
+        return {
+            "target_type": "folder",
+            "target_name": "news",
+            "folder_mode": "combined",
+            "period_type": "yesterday",
+            "period_value": None,
+            "mark_as_read": False,
+            "query": _user_message,
+            "requested_model": None,
+            "recurrence_type": "daily",
+            "interval_days": None,
+            "time": "10:00",
+        }
+
+    async def fake_append(record):
+        saved.append(record)
+
+    monkeypatch.setattr(bot, "parse_command_with_gpt", fake_parse_command)
+    monkeypatch.setattr(bot, "_append_schedule_record", fake_append)
+    monkeypatch.setattr(bot, "_schedule_next_job", scheduled.append)
+
+    asyncio.run(bot.process_user_message(update, DummyContext()))
+
+    assert len(saved) == 1
+    assert scheduled == saved
+    assert saved[0]["target_type"] == "folder"
+    assert saved[0]["target_name"] == "news"
+    assert saved[0]["folder_mode"] == "combined"
+    assert saved[0]["period_type"] == "yesterday"
+    assert saved[0]["recurrence_type"] == "daily"
+    assert saved[0]["time"] == "10:00"
+    reply_texts = [text for text, _ in update.message.replies]
+    assert any("Режим папки: combined" in text for text in reply_texts)
+
+
 def test_process_user_message_shows_operation_stats_for_single_chat(
     monkeypatch, tmp_path
 ):

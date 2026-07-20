@@ -13,6 +13,7 @@
     "chat_id",
     "target_type",
     "target_name",
+    "folder_mode",
     "period_type",
     "period_value",
     "query",
@@ -49,9 +50,13 @@
       "type": "string",
       "minLength": 1
     },
+    "folder_mode": {
+      "type": ["string", "null"],
+      "enum": ["per_chat", "combined", null]
+    },
     "period_type": {
       "type": ["string", "null"],
-      "enum": ["days", "hours", "today", "last_messages", "unread", null]
+      "enum": ["days", "hours", "today", "yesterday", "last_messages", "unread", null]
     },
     "period_value": {
       "type": ["integer", "null"],
@@ -88,5 +93,24 @@
       "minimum": 1,
       "maximum": 31
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "target_type": {
+            "const": "folder"
+          }
+        },
+        "required": ["target_type"]
+      },
+      "else": {
+        "properties": {
+          "folder_mode": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }

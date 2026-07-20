@@ -82,13 +82,20 @@ Folder and unread examples:
 
 ```text
 Суммаризируй непрочитанные в папке AI
+В папке news за вчера найти все упоминания складов WB
+Сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными
 Суммаризируй непрочитанные в чате Поддержка и отметь как прочитанные
 ```
+
+The first folder request uses the default per-chat mode. The next two merge all
+selected folder histories into one LLM context and return one answer with links
+to original posts.
 
 Schedule example:
 
 ```text
 Суммаризируй папку AI каждый день в 20:00
+Каждое утро в 10:00 сделай топ-10 новостей по всем каналам из папки news за вчера
 /schedules
 /delschedule <id>
 ```

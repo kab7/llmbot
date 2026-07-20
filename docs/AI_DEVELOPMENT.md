@@ -95,9 +95,11 @@ both in-memory settings and `.env`.
    analysis immediately.
 8. Resolve either one chat or every chat matching a Telegram folder.
 9. Save the successfully resolved target and period to `current_context`.
-10. Load and analyze each chat sequentially.
+10. For `per_chat`, load and analyze each chat sequentially. For `combined`,
+    load all histories sequentially, merge source-labelled blocks, and run one
+    LLM operation over the full folder context.
 11. Optionally mark each processed chat as read.
-12. Send per-chat results and aggregate LLM statistics.
+12. Send the per-chat or one combined result and aggregate LLM statistics.
 
 Do not bypass the deterministic intent guards when extending parsing. They exist
 because an LLM parser may return structurally valid but invented destructive or
@@ -111,7 +113,8 @@ surprising intent.
 | --- | --- |
 | `target_type` | `chat`, `folder`, or `null` |
 | `target_name` | Explicit target name or `null` |
-| `period_type` | `days`, `hours`, `today`, `last_messages`, `unread`, or `null` |
+| `folder_mode` | `per_chat`, `combined`, or `null`; only meaningful for folders |
+| `period_type` | `days`, `hours`, `today`, `yesterday`, `last_messages`, `unread`, or `null` |
 | `period_value` | Positive integer only for `days`, `hours`, and `last_messages` |
 | `mark_as_read` | Boolean; must be backed by explicit source text |
 | `query` | Full user intent used for downstream analysis |
@@ -132,6 +135,9 @@ The original user text has authority over parsed output:
 - `period_type=unread` is discarded without explicit unread wording;
 - obvious textual periods such as today, yesterday, a week, N hours/days, and
   last N messages override a conflicting parsed period;
+- explicit common/top-N/cross-folder search wording selects `combined`;
+  otherwise folder requests remain `per_chat`, and explicit “each separately”
+  wording forces `per_chat`;
 - parsed recurrence is discarded unless the original text contains an explicit
   recurrence phrase;
 - a recurrence phrase that the parser failed to understand produces an error
@@ -157,8 +163,18 @@ explicit/pinned peers with dynamic `bots`, `contacts`, `non_contacts`, `groups`,
 and `broadcasts` rules, then applies explicit exclusion and the
 `exclude_read`, `exclude_muted`, and `exclude_archived` flags.
 
-Folder requests operate on all matched dialogs sequentially. There is no
-concurrency limit because there is currently no concurrent per-folder execution.
+Folder history loading is sequential. There are two processing modes:
+
+- `per_chat` is the backward-compatible default and makes one LLM call/result per
+  matched dialog;
+- `combined` appends a source header plus the selected history from every
+  non-empty dialog, then makes one LLM call/result over that merged context.
+
+`combined` history requests `include_message_links=True`, so every linkable
+message line includes its original permalink. The processor is instructed to
+cite relevant links and deduplicate repeated events. Its response validator
+requires at least one URL copied from the history when linkable URLs exist and
+rejects Telegram URLs absent from the history.
 
 ### Period selection
 
@@ -167,6 +183,8 @@ concurrency limit because there is currently no concurrent per-folder execution.
 - `days`: messages since current UTC time minus N days;
 - `hours`: messages since current UTC time minus N hours;
 - `today`: messages since local midnight converted to UTC;
+- `yesterday`: messages from the previous local midnight up to the current local
+  midnight, both converted to UTC;
 - `last_messages`: latest N messages;
 - `unread`: at most the unread count/default limit and, when available, only
   message IDs above `read_inbox_max_id`;
@@ -182,7 +200,10 @@ history loading. If Telegram reports unread messages but the text-only selection
 is empty, an explicit mark-as-read request can still acknowledge the chat.
 
 The returned first message ID is used to construct a `t.me` link when Telegram
-supports one.
+supports one. Public username entities use `t.me/<username>/<message_id>`.
+Private channels and supergroups use `t.me/c/<channel_id>/<message_id>`. Legacy
+private `Chat` entities and private user dialogs have no usable message
+permalink.
 
 ## 6. LLM runtime contract
 
@@ -238,7 +259,9 @@ supported for Yandex Cloud.
 
 The processor prompt requires Russian, grounded output. A response validator
 rejects suspicious HTML/code artifacts, unexpected scripts, excessive mixed
-scripts, boilerplate, and dates not supported by the supplied history.
+scripts, boilerplate, and dates not supported by the supplied history. Combined
+folder calls additionally reject missing or invented source links as described
+above.
 `_cleanup_summary_text()` then removes known presentation artifacts.
 
 The complete payload and response are logged to `llm_traffic.log`. Never add
@@ -264,14 +287,14 @@ Times use the process local timezone. Docker Compose currently sets
 SQLite table `schedules` stores:
 
 `id`, `created_at`, `last_run`, `next_run`, `chat_id`, `target_type`,
-`target_name`, `period_type`, `period_value`, `query`, `requested_model`,
-`mark_as_read`, `recurrence_type`, `time`, `interval_days`, `weekday`, and
-`day_of_month`.
+`target_name`, `folder_mode`, `period_type`, `period_value`, `query`,
+`requested_model`, `mark_as_read`, `recurrence_type`, `time`, `interval_days`,
+`weekday`, and `day_of_month`.
 
 Important behavior:
 
-- `_ensure_schema()` currently performs only the known `requested_model`
-  additive migration;
+- `_ensure_schema()` performs the known `requested_model` and `folder_mode`
+  additive migrations;
 - all load/modify/save operations in `bot.py` use `schedules_lock`;
 - persistence rewrites the full table in one SQLite transaction;
 - stale `next_run` values are recomputed at startup rather than executed as
@@ -295,13 +318,11 @@ transformations are headings, bold, inline code, and HTTP(S) links. If Telegram
 rejects HTML, the bot retries with plain text. Long messages are split below
 Telegram's 4096-character limit.
 
-Mark-as-read happens after `_process_chat_with_openai_result()` returns, except
-for the documented unread/text-empty case. That helper converts LLM failures into
-visible `❌` answer text instead of raising, so the current flow can acknowledge a
-chat even when analysis failed. Preserve or deliberately change this behavior
-with explicit tests; do not assume “mark after successful analysis” is currently
-enforced. A Telegram acknowledgement failure is logged but does not change the
-analysis result.
+Mark-as-read happens only when `_process_chat_with_openai_result()` returns
+`ok=True`, except for the documented unread/text-empty case. The helper converts
+LLM failures into visible `❌` answer text with `ok=False`; per-chat and combined
+flows must preserve unread state in that case. A Telegram acknowledgement
+failure is logged but does not change the analysis result.
 
 `current_context` is updated only after target resolution succeeds. It contains:
 
@@ -309,7 +330,7 @@ analysis result.
 {
     "target_type": "chat" | "folder",
     "target_name": str,
-    "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | None,
+    "period_type": "days" | "hours" | "today" | "yesterday" | "last_messages" | "unread" | None,
     "period_value": int | None,
 }
 ```
@@ -330,9 +351,11 @@ Use `env.example` as the variable inventory. Important path behavior:
 
 The supported Python range is 3.11-3.13. The Docker image uses Python 3.12.
 
-`setup.sh` validates and repairs `venv`, supports `--dev` and `--recreate`, and
-accepts `PYTHON_BIN`/`VENV_DIR` overrides. `start.sh` refuses to launch an
-unsupported or incomplete environment.
+`setup.sh` validates and repairs `venv`, reuses a healthy supported venv
+interpreter when no compatible system Python is on `PATH`, supports `--dev` and
+`--recreate`, and accepts `PYTHON_BIN`/`VENV_DIR` overrides. Forced recreation
+still requires an external supported interpreter. `start.sh` refuses to launch
+an unsupported or incomplete environment.
 
 ## 10. Tests and verification
 
@@ -348,9 +371,9 @@ all four runtime modules: `bot`, `config`, `llm_runtime`, and
 
 Last verified on 2026-07-20 with Python 3.12.13:
 
-- 118 tests passed;
-- total configured coverage: 72.53%;
-- `bot.py`: 69%;
+- 127 tests passed;
+- total configured coverage: 74.75%;
+- `bot.py`: 71%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;
 - `schedule_runtime.py`: 100%.
@@ -408,8 +431,10 @@ muted, archived, legacy Telethon filter results, timeouts, and error wrapping.
 ## 12. Known constraints
 
 - `bot.py` is a large monolith; avoid creating new cross-module import cycles.
-- Folder chats are processed sequentially and large folders can take a long time.
-- Entire selected histories are sent in one LLM request; there is no token-aware
+- Folder histories are loaded sequentially and large folders can take a long
+  time.
+- Entire selected histories are sent in one request per chat (`per_chat`) or one
+  merged request for the whole folder (`combined`). There is no token-aware
   chunking or map/reduce summarization.
 - Only text messages are analyzed.
 - In-memory context is global and cannot safely support multiple admins.

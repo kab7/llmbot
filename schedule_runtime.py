@@ -21,6 +21,7 @@ _SCHEDULE_COLUMNS = [
     "chat_id",
     "target_type",
     "target_name",
+    "folder_mode",
     "period_type",
     "period_value",
     "query",
@@ -51,6 +52,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             chat_id INTEGER NOT NULL,
             target_type TEXT NOT NULL,
             target_name TEXT NOT NULL,
+            folder_mode TEXT,
             period_type TEXT,
             period_value INTEGER,
             query TEXT NOT NULL,
@@ -69,6 +71,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "requested_model" not in existing_columns:
         conn.execute("ALTER TABLE schedules ADD COLUMN requested_model TEXT")
+    if "folder_mode" not in existing_columns:
+        conn.execute("ALTER TABLE schedules ADD COLUMN folder_mode TEXT")
 
 
 def _row_to_schedule(row: sqlite3.Row) -> dict[str, Any]:
@@ -174,6 +178,7 @@ def build_schedule_record(
     mark_as_read: bool,
     chat_id: int,
     schedule_spec: dict[str, Any],
+    folder_mode: Optional[str] = None,
     now_local: Optional[datetime] = None,
 ) -> dict[str, Any]:
     now = now_local or datetime.now().astimezone()
@@ -185,6 +190,7 @@ def build_schedule_record(
         "chat_id": int(chat_id),
         "target_type": target_type,
         "target_name": target_name,
+        "folder_mode": folder_mode,
         "period_type": period_type,
         "period_value": period_value,
         "query": query,
@@ -225,6 +231,7 @@ def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
                 int(schedule.get("chat_id")),
                 schedule.get("target_type"),
                 schedule.get("target_name"),
+                schedule.get("folder_mode"),
                 schedule.get("period_type"),
                 schedule.get("period_value"),
                 schedule.get("query") or "",
@@ -252,6 +259,7 @@ def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
                     chat_id,
                     target_type,
                     target_name,
+                    folder_mode,
                     period_type,
                     period_value,
                     query,
@@ -262,7 +270,7 @@ def save_schedules(path: Path, schedules: list[dict[str, Any]]) -> None:
                     interval_days,
                     weekday,
                     day_of_month
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

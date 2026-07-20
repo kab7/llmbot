@@ -65,7 +65,14 @@ venv_is_healthy() {
         "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1
 }
 
-PYTHON_CMD="$(find_python || true)"
+PYTHON_CMD=""
+if [[ "$FORCE_RECREATE" == false ]] &&
+    [[ -z "${PYTHON_BIN:-}" ]] &&
+    venv_is_healthy; then
+    PYTHON_CMD="$VENV_DIR/bin/python"
+else
+    PYTHON_CMD="$(find_python || true)"
+fi
 if [[ -z "$PYTHON_CMD" ]]; then
     echo "Python 3.11-3.13 was not found."
     echo "Install Python 3.12 or set PYTHON_BIN to a compatible interpreter."
