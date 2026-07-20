@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kab7/llmbot/blob/main/docs/schemas/parser-command.schema.json",
+  "title": "LLM parser command",
+  "description": "The exact ten-field object requested by config.PARSER_PROMPT before validate_command_payload adds internal time_missing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target_type",
+    "target_name",
+    "period_type",
+    "period_value",
+    "mark_as_read",
+    "query",
+    "requested_model",
+    "recurrence_type",
+    "interval_days",
+    "time"
+  ],
+  "properties": {
+    "target_type": {
+      "type": ["string", "null"],
+      "enum": ["chat", "folder", null]
+    },
+    "target_name": {
+      "type": ["string", "null"]
+    },
+    "period_type": {
+      "type": ["string", "null"],
+      "enum": ["days", "hours", "today", "last_messages", "unread", null]
+    },
+    "period_value": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "mark_as_read": {
+      "type": "boolean"
+    },
+    "query": {
+      "type": ["string", "null"]
+    },
+    "requested_model": {
+      "type": ["string", "null"]
+    },
+    "recurrence_type": {
+      "type": ["string", "null"],
+      "enum": ["daily", "weekly", "monthly", "interval_days", null]
+    },
+    "interval_days": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "time": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "period_type": {
+            "enum": ["days", "hours", "last_messages"]
+          }
+        },
+        "required": ["period_type"]
+      },
+      "then": {
+        "properties": {
+          "period_value": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "period_value": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "recurrence_type": {
+            "const": "interval_days"
+          }
+        },
+        "required": ["recurrence_type"]
+      },
+      "then": {
+        "properties": {
+          "interval_days": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "time": {
+            "type": "string",
+            "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "interval_days": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

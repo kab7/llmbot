@@ -1,5 +1,5 @@
-python-telegram-bot>=21.0
+python-telegram-bot>=21.0,<23
 telethon==1.42.0
-requests>=2.31.0
+requests>=2.31.0,<3
 python-dotenv==1.0.0
-APScheduler>=3.10.4
+APScheduler>=3.10.4,<4

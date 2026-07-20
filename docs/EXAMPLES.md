@@ -1,367 +1,269 @@
-# Примеры использования
+# Current request examples
 
-Все команды выполняются в Telegram чате с ботом.
+These examples reflect the parser schema and deterministic guards in the current
+code. Free text is parsed by an LLM, so wording variants can still depend on the
+configured model.
 
-## Базовые примеры
+## Single chat
 
-### Суммаризация чата
-
-```
-Суммаризируй что происходило в чате Работа за последние сутки
-```
-
-**Результат:** Краткое резюме обсуждений за последние 24 часа из чата "Работа"
-
----
-
-```
-Сделай краткую выжимку из чата Проект за неделю
+```text
+Суммаризируй чат Работа за неделю
+Что сегодня писали в чате Команда?
+Что обсуждали в личке с Иваном за последние 3 часа?
+Покажи последние 500 сообщений из чата Release
+Какие решения приняли в чате Руководство за 3 дня?
 ```
 
-**Результат:** Суммаризация чата "Проект" за последние 7 дней
+Accepted targets include users, groups, supergroups, and channels visible to the
+Telethon account.
 
----
+## Telegram folder
 
-```
-Что обсуждали вчера в личке с Иваном?
-```
-
-**Результат:** Резюме личной переписки с Иваном за вчерашний день
-
-## Работа с контекстом
-
-Бот запоминает последний чат и период, чтобы вы могли задавать дополнительные вопросы без повторения:
-
-```
-Пользователь: Суммаризируй чат Работа за неделю
-
-Бот: [Анализирует чат "Работа" за последние 7 дней]
-     [Сохраняет контекст: чат="Работа", период="7 дней"]
-
-Пользователь: О чем договорились?
-
-Бот: [Использует тот же чат "Работа" и период "7 дней"]
-
-Пользователь: А какие следующие шаги?
-
-Бот: [Снова использует чат "Работа" и период "7 дней"]
-
-Пользователь: Покажи за вчера
-
-Бот: [Использует чат "Работа", но уже за "вчера"]
+```text
+Суммаризируй папку AI за последние сутки
+Что нового в папке Проекты сегодня?
+Какие риски обсуждали в папке Работа за неделю?
+Суммаризируй непрочитанные во всех чатах папки Новости
 ```
 
-**Управление контекстом:**
-```
-/context    # Показать текущий контекст
-/reset      # Сбросить контекст
+The bot resolves the folder, reproduces its Telegram filter rules, and processes
+matched dialogs sequentially. Each chat receives its own result.
+
+## Periods
+
+Last N × 24 hours:
+
+```text
+Суммаризируй чат Работа за сутки
+Суммаризируй чат Работа за вчера
+Суммаризируй чат Работа за 7 дней
+Суммаризируй чат Работа за неделю
 ```
 
-## Нечеткий поиск чатов
+The current parser maps both “вчера” and “за сутки” to `days=1`, meaning the last
+24 hours rather than the previous calendar day.
 
-Бот умеет находить чаты даже при неточном совпадении:
+Hours:
 
-```
-Пользователь: Суммаризируй чат "Замедл"
-
-Бот: ✅ Найден чат: 'Замедление в такси-зоне (ex-Приоритетная доставка)' (схожесть: 75%)
-     [Анализирует найденный чат]
-```
-
-```
-Пользователь: Что в чате "Иван"?
-
-Бот: ✅ Найден чат: 'Иван Петров' (схожесть: 85%)
-     [Анализирует чат с Иваном Петровым]
+```text
+Что было в чате Поддержка за последний час?
+Что писали в чате Мониторинг за 12 часов?
 ```
 
-## Гибкие периоды времени
+Today:
 
-Бот поддерживает различные способы указания временного периода:
-
-### По дням
-
-```
-Суммаризируй чат Работа за последние сутки
-```
-**Результат:** Сообщения за последние 24 часа
-
-```
-Что обсуждали вчера в чате Проект?
-```
-**Результат:** Сообщения за вчерашний день
-
-```
-Покажи чат Команда за неделю
-```
-**Результат:** Сообщения за последние 7 дней
-
-### По часам
-
-```
-Что было за последний час в чате Поддержка?
-```
-**Результат:** Сообщения за последние 60 минут
-
-```
-Покажи чат Мониторинг за последние 3 часа
-```
-**Результат:** Сообщения за последние 3 часа
-
-```
-Что писали за последние 12 часов в чате Дежурные?
-```
-**Результат:** Сообщения за последние 12 часов
-
-### Сегодня
-
-```
+```text
 Что сегодня писали в чате Команда?
 ```
-**Результат:** Все сообщения с начала суток до текущего момента
 
-```
-Суммаризируй сегодняшние обсуждения в чате Проект
-```
-**Результат:** Сообщения с 00:00 до текущего времени
+“Today” starts at local midnight in the bot process timezone.
 
-### По количеству сообщений
+Message count:
 
-```
-Дай последние 100 сообщений из чата Работа
-```
-**Результат:** Ровно 100 последних сообщений
-
-```
-Покажи последние 500 сообщений из чата Разработка
-```
-**Результат:** 500 последних сообщений
-
-```
-Суммаризируй последние 1000 сообщений из чата Общий
-```
-**Результат:** Анализ 1000 последних сообщений
-
-### Без указания периода
-
-```
-Суммаризируй чат Работа
-```
-**Результат:** Последние 300 сообщений (по умолчанию)
-
-## Свободные запросы
-
-### Поиск информации
-
-```
-О чем говорили в чате Проект на тему дедлайнов?
-```
-
-**Результат:** Поиск и извлечение информации о дедлайнах из чата "Проект"
-
----
-
-```
-Что писал Александр в чате Встречи за последние 3 дня?
-```
-
-**Результат:** Все сообщения Александра из чата "Встречи" за 3 дня
-
-### Анализ договоренностей
-
-```
-До чего договорились в чате Команда, какие следующие шаги?
-```
-
-**Результат:** Извлечение договоренностей и следующих шагов
-
----
-
-```
-Какие решения были приняты в чате Руководство за неделю?
-```
-
-**Результат:** Список принятых решений за неделю
-
-### Тематический анализ
-
-```
-Что обсуждали про бюджет в чате Финансы?
-```
-
-**Результат:** Все обсуждения, связанные с бюджетом
-
----
-
-```
-О каких проблемах говорили в чате Техподдержка за последние сутки?
-```
-
-**Результат:** Список проблем из чата техподдержки
-
-## Разные форматы периодов
-
-### По дням
-
-```
-Что в чате Работа за последние 3 дня?
-```
-
-```
-Суммаризируй чат Проект за неделю
-```
-
-```
-Что обсуждали вчера в чате Команда?
-```
-
-### Последние N сообщений
-
-```
+```text
 Покажи последние 100 сообщений из чата Проект
 ```
 
-```
-Что в последних 50 сообщениях чата Работа?
-```
+No explicit period:
 
-### Без указания периода
-
-```
-О чем вообще чат Команда?
+```text
+Суммаризируй чат Проект
 ```
 
-**Результат:** Анализ последних 300 сообщений (настраивается в `config.py`)
+The bot inherits the period from context when possible; otherwise it uses the
+latest 300 messages.
 
-## Управление настройками
+## Unread and mark-as-read
 
-### Просмотр текущих настроек
+Read unread messages without changing Telegram state:
 
-```
-/start
-```
-
-**Результат:** Приветствие и информация о боте с текущими моделями
-
-**LLM runtime (настраиваемый):**
-- `/llmconfig` — посмотреть текущие параметры
-- `/setmodel [primary|fallback] <model[,model2,...]>` — сменить одну или несколько моделей
-- `/seturl [primary|fallback] <url>` — сменить endpoint
-- `/settoken [primary|fallback] <token>` — сменить токен
-
-Пример с приоритетным списком моделей:
-
-```
-/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
-/setmodel fallback openrouter/free,deepseek/deepseek-chat-v3-0324:free
+```text
+Суммаризируй непрочитанные в чате Поддержка
+Суммаризируй непрочитанные в папке Работа
 ```
 
-Бот попробует модели по порядку и сделает паузу только после полного неуспешного прохода по списку.
+Explicitly acknowledge processed chats:
 
-## Продвинутые сценарии
-
-### Сравнение информации из разных чатов
-
-```
-Что говорили про дедлайн в чате Проект?
-# Бот анализирует чат "Проект"
-
-А что про тот же дедлайн говорили в чате Руководство?
-# Бот переключается на чат "Руководство", но сохраняет контекст вопроса
+```text
+Суммаризируй непрочитанные в чате Поддержка и отметь как прочитанные
+Суммаризируй папку Новости за сутки и пометь чаты прочитанными
 ```
 
-### Работа с личными переписками
+`mark_as_read` is discarded unless the original text contains explicit
+mark-as-read intent. Merely loading history does not acknowledge a chat.
 
-```
-Суммаризируй переписку с @username за неделю
-```
+Current edge case: analysis failures are converted to visible error text by the
+LLM helper, so an explicit mark-as-read request can still acknowledge the chat
+after an LLM failure. See `docs/AI_DEVELOPMENT.md` before changing this behavior.
 
-```
-О чем я договаривался с Иваном Петровым вчера?
-```
+## Follow-up context
 
-```
-Что писал мне Александр за последние 3 дня?
-```
-
-## Полезные комбинации
-
-### Еженедельный обзор
-
-```
+```text
 Суммаризируй чат Работа за неделю
-О каких проблемах говорили?
-Какие решения были приняты?
-Какие следующие шаги?
-```
-
-### Быстрый просмотр всех чатов
-
-```
-Что нового в чате Проект А?
-# Бот запоминает период по умолчанию
-
-Что нового в чате Проект Б?
-А в чате Команда?
-```
-
-### Контекстный поиск
-
-```
-Суммаризируй чат Разработка за неделю
-/context  # Проверить сохраненный контекст
-
-Были ли упоминания багов?
-А что про тесты?
-Кто отвечает за деплой?
-```
-
-## Использование возможностей бота
-
-```
-Суммаризируй чат "Приоритетн"
-# Бот найдет похожий чат через нечеткий поиск
-# Использует текущую runtime LLM модель
-# Параметры LLM можно менять через /setmodel /seturl /settoken
-# Сохранит контекст
-
 О чем договорились?
-# Использует сохраненный контекст
-
+Какие следующие шаги?
 /context
-# Проверить текущий контекст
-
-А какие риски?
-# Анализирует тот же чат с новым вопросом
+/reset
 ```
 
-## Типичные паттерны использования
+Context stores only:
 
-### Утренний обзор
+- resolved target type;
+- resolved target name;
+- period type;
+- period value.
 
-```
-Что обсуждали в чате Работа за вчера?
-Были ли срочные задачи?
-Какие встречи сегодня?
-```
+It does not store the previous question or generated answer. Context is global
+for the single admin and is lost on restart.
 
-### Еженедельный отчет
+Explicitly naming a new target replaces the target context. Explicitly naming a
+new period replaces the period context.
 
-```
-Суммаризируй чат Проект за неделю
-Какие были достижения?
-Какие проблемы возникли?
-Что планируется на следующую неделю?
-```
+## Fuzzy lookup
 
-### Подготовка к встрече
-
-```
-О чем мы говорили с Иваном в последний раз?
-Какие у нас были договоренности?
-Что нужно обсудить дальше?
+```text
+Суммаризируй чат Рабта
+Суммаризируй папку Проект
 ```
 
----
+Matching ignores case and emoji. Exact matches score 1.0, substring matches 0.9,
+and other candidates use `SequenceMatcher`. The best candidate is accepted at
+`>= 0.5`, so the bot always shows the recognized target before processing.
 
-💡 **Совет:** Используйте `/context` чтобы проверить, какой чат и период сейчас в памяти бота, и `/reset` чтобы начать с чистого листа!
+## Free-form analysis
+
+```text
+Что говорили про дедлайн в чате Проект за неделю?
+Кто отвечает за деплой в чате Release?
+Какие открытые вопросы остались в папке Проекты?
+Были ли противоречия по бюджету в чате Финансы за 3 дня?
+```
+
+The processor is instructed to answer only from selected history and to state
+when evidence is missing.
+
+## One-request model override
+
+```text
+Суммаризируй папку AI с помощью anthropic/claude-opus-4.6
+Используй модель openai/gpt-4.1 для анализа чата Release за сутки
+```
+
+The override affects only the analysis call. Parsing still uses configured
+candidates. The requested model gets three attempts and does not fall back to
+the configured model lists.
+
+## Periodic schedules
+
+Daily:
+
+```text
+Суммаризируй папку AI каждый день в 20:00
+```
+
+Weekly:
+
+```text
+Суммаризируй чат Работа каждую неделю в 09:00
+```
+
+Monthly:
+
+```text
+Суммаризируй папку Отчеты каждый месяц в 10:30
+```
+
+Every N days:
+
+```text
+Суммаризируй папку Новости раз в 3 дня в 19:30
+```
+
+Combined behavior:
+
+```text
+Суммаризируй непрочитанные в папке AI каждый день в 20:00 с помощью anthropic/claude-opus-4.6 и отмечай прочитанными
+```
+
+A schedule requires explicit recurrence and a valid local `HH:MM`. It is saved
+instead of running immediately.
+
+Management:
+
+```text
+/schedules
+/delschedule ab12cd34
+```
+
+## Runtime LLM configuration
+
+Inspect:
+
+```text
+/llmconfig
+/limits
+/limits fallback
+```
+
+Primary endpoint/token default scope:
+
+```text
+/seturl https://openrouter.ai/api/v1/chat/completions
+/settoken <token>
+```
+
+Explicit primary/fallback:
+
+```text
+/seturl primary https://openrouter.ai/api/v1/chat/completions
+/seturl fallback https://openrouter.ai/api/v1/chat/completions
+/settoken primary <token>
+/settoken fallback <token>
+```
+
+Model scope is mandatory:
+
+```text
+/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
+/setmodel fallback openrouter/free
+```
+
+Changes are applied in memory and persisted to `.env`.
+
+## Provider configuration
+
+OpenRouter-compatible:
+
+```dotenv
+PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_API_KEY=...
+```
+
+Yandex Cloud:
+
+```dotenv
+PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
+PRIMARY_LLM_API_KEY=...
+```
+
+Yandex uses `Api-Key` authorization and does not support the bot's `/limits`
+command.
+
+## Operational commands
+
+```text
+/start
+/help
+/folders
+/context
+/reset
+/llmconfig
+/limits primary
+/seturl primary <url>
+/setmodel primary <model>
+/settoken primary <token>
+/schedules
+/delschedule <id>
+```

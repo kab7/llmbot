@@ -1,342 +1,229 @@
 # Telegram Chat Analyzer Bot
 
-Бот для анализа и суммаризации истории Telegram чатов с использованием OpenRouter-compatible LLM API.
+Single-admin Telegram bot that reads chat history through Telethon and answers
+questions or produces summaries through an OpenAI-compatible LLM API.
 
-🚀 **[Быстрый старт за 5 минут →](docs/QUICKSTART.md)**
+Repository: [kab7/llmbot](https://github.com/kab7/llmbot)
 
-## Возможности
+The Python code is the behavioral source of truth. Agent-oriented implementation
+documentation is in [docs/AI_DEVELOPMENT.md](docs/AI_DEVELOPMENT.md), and
+machine-readable derived contracts are in [docs/SCHEMAS.md](docs/SCHEMAS.md).
 
-- 📊 **Суммаризация переписок** - получение краткого резюме обсуждений за любой период
-- 💬 **Свободные запросы** - вопросы о содержании чатов ("о чем говорили?", "до чего договорились?")
-- 🤖 **Естественный язык** - команды описываются обычным текстом, AI понимает ваши запросы
-- 📅 **Гибкие периоды** - "за неделю", "вчера", "сегодня", "за последний час", "последние 1000 сообщений" или без указания периода
-- 🔍 **Умный поиск чатов** - находит чаты даже при неточном совпадении названия
-- 💾 **Контекст запросов** - запоминает последний чат и период для быстрых запросов
-- 🔐 **Доступ ко всем чатам** - через Telethon получаем доступ ко всей вашей истории переписок
-- 🤖 **Гибкая модель LLM** - настраивается через `/setmodel`, можно задать несколько моделей по приоритету
-- 🔒 **Безопасность** - работает только для вас, все данные хранятся локально
-- ⚡ **Простота** - runtime-переопределение URL/токена/модели через команды
+## Current capabilities
 
-## Установка
+- Analyze one Telegram chat, private dialog, group, or channel.
+- Analyze all dialogs matched by a Telegram folder.
+- Select the last N days, hours, messages, today from local midnight, or unread
+  messages.
+- Optionally acknowledge processed chats as read when explicitly requested.
+- Reuse the last successfully resolved target and period as in-memory context.
+- Use ordered primary and fallback LLM model lists with retries, free-model
+  pacing, and response-quality validation.
+- Override the analysis model for one natural-language request.
+- Create daily, weekly, monthly, and every-N-days schedules from natural
+  language.
+- Persist schedules in SQLite and runtime LLM changes in `.env`.
+- Restrict every Telegram handler to `ADMIN_USER_ID`.
 
-### Автоматическая установка (рекомендуется)
+Only text messages are analyzed. Selected history is sent to the configured LLM
+provider as one request; there is currently no token-aware chunking.
 
-```bash
-./setup.sh
-```
+## Quick start
 
-Скрипт автоматически:
-- Проверит наличие Python
-- Создаст виртуальное окружение
-- Установит все зависимости
-- Предложит создать файл `.env`
-
-### Ручная установка
-
-**1. Убедитесь, что Python 3.8+ установлен:**
+Requirements: Python 3.11-3.13. Production uses Python 3.12.
 
 ```bash
-python3 --version
+git clone https://github.com/kab7/llmbot.git
+cd llmbot
+./setup.sh --dev
 ```
 
-Если Python не установлен, см. [docs/INSTALL.md](docs/INSTALL.md)
+`setup.sh` finds a supported Python, creates or repairs `venv`, installs runtime
+dependencies, optionally installs test dependencies with `--dev`, and creates
+`.env` from `env.example` only when `.env` does not exist.
 
-**2. Создайте виртуальное окружение:**
+Fill at least these required values in `.env`:
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-**3. Установите зависимости:**
-
-```bash
-pip install -r requirements.txt
-```
-
-📖 **Подробная инструкция по установке:** [docs/INSTALL.md](docs/INSTALL.md)
-
-### 2. Получите необходимые API ключи
-
-#### Telegram Bot Token
-1. Найдите [@BotFather](https://t.me/botfather) в Telegram
-2. Отправьте команду `/newbot`
-3. Следуйте инструкциям и получите токен
-
-#### Telethon API Credentials
-1. Перейдите на [https://my.telegram.org](https://my.telegram.org)
-2. Войдите с вашим номером телефона
-3. Перейдите в "API development tools"
-4. Создайте приложение и получите `api_id` и `api_hash`
-
-#### OpenRouter API Key (опционально)
-1. Перейдите на https://openrouter.ai/keys
-2. Создайте API ключ для доступа к OpenRouter-compatible API
-3. Ключ можно задать сразу в `.env` или позже через команду `/settoken`
-
-#### Ваш Telegram User ID
-1. Найдите [@userinfobot](https://t.me/userinfobot) в Telegram
-2. Отправьте ему любое сообщение
-3. Скопируйте ваш ID
-
-### 3. Настройте переменные окружения
-
-Скопируйте `env.example` в `.env`:
-
-```bash
-cp env.example .env
-```
-
-Заполните значения в файле `.env`:
-
-```env
-# Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_API_ID=your_api_id_here
-TELEGRAM_API_HASH=your_api_hash_here
+```dotenv
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_API_ID=...
+TELEGRAM_API_HASH=...
 TELEGRAM_PHONE=+79991234567
+ADMIN_USER_ID=...
+```
 
-# OpenRouter-compatible LLM API (опционально)
-# Получите токен: https://openrouter.ai/keys
+At least one LLM token is needed to analyze messages. It may be configured
+before startup:
+
+```dotenv
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
-PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
-
-# Или Yandex Cloud AliceAI
-# folder_id указывается прямо в model, отдельная env-переменная не нужна
-# PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-# PRIMARY_LLM_MODEL=gpt://your_folder_id/aliceai-llm/latest
-# PRIMARY_LLM_API_KEY=your_yandex_api_key_here
-
-# Опциональный fallback
-FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-FALLBACK_LLM_MODEL=openrouter/free
-FALLBACK_LLM_TOKEN=
-
-# Admin
-ADMIN_USER_ID=your_telegram_user_id_here
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_API_KEY=...
 ```
 
-Установите правильные права доступа:
+or later in Telegram:
 
-```bash
-chmod 600 .env
+```text
+/settoken primary <token>
 ```
 
-### 4. Запустите бота
-
-**Простой способ (с автоматической проверкой):**
+Start the bot:
 
 ```bash
 ./start.sh
 ```
 
-Скрипт автоматически проверит конфигурацию и запустит бота.
+On the first Telethon authorization, enter the Telegram login code and 2FA
+password if requested. The resulting session file is sensitive account
+authentication material.
 
-**Ручной способ:**
+Detailed installation and repair instructions:
+[docs/INSTALL.md](docs/INSTALL.md).
+
+## Docker
+
+The image uses Python 3.12 and compiles all runtime modules during build.
+Compose stores mutable state under `/data` in the container.
 
 ```bash
-python bot.py
+docker compose up -d --build
 ```
 
-При первом запуске Telethon попросит вас авторизоваться:
-1. Введите код подтверждения из Telegram
-2. Если у вас включена двухфакторная аутентификация, введите пароль
+The current production host uses the legacy command:
 
-После первого запуска сессия сохранится, и повторная авторизация не потребуется.
-
-## Настройка
-
-### Команды бота
-
-- `/start` - приветствие и информация о боте
-- `/help` - показать все доступные команды
-- `/context` - показать текущий контекст (последний чат и период)
-- `/reset` - сбросить контекст
-- `/llmconfig` - показать текущие runtime-настройки LLM
-- `/limits [primary|fallback]` - показать лимиты/квоты API ключа
-- `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible endpoint
-- `/setmodel [primary|fallback] <model[,model2,...]>` - задать одну или несколько моделей
-- `/settoken [primary|fallback] <token>` - задать API ключ
-
-Для Yandex Cloud достаточно задать:
-- `PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions`
-- `PRIMARY_LLM_MODEL=gpt://<folder_id>/aliceai-llm/latest`
-- `PRIMARY_LLM_API_KEY=<api_key>`
-
-Бот сам переключит заголовок авторизации на `Authorization: Api-Key ...` и возьмет `x-folder-id` из model URI.
-`/limits` для Yandex Cloud не поддерживается, так как у него нет OpenRouter-style endpoint `.../key`.
-
-Команды `/seturl`, `/setmodel`, `/settoken` сохраняют изменения в `.env`, поэтому настройки сохраняются после перезапуска.
-Периодические расписания суммаризации сохраняются в локальной SQLite базе `schedules.db`.
-Логи пишутся в `bot.log` и `llm_traffic.log` с ротацией (`LOG_*` и `LLM_TRAFFIC_LOG_*` в `.env`).
-
-### Настройки в config.py и через чат
-
-Значения по умолчанию можно изменить в `config.py`, а во время работы переопределять командами `/seturl`, `/setmodel`, `/settoken`:
-
-```python
-# Количество сообщений для загрузки, если период не указан
-DEFAULT_MESSAGES_LIMIT = 300
-
-# Runtime LLM (OpenRouter-compatible)
-DEFAULT_LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
-DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
+```bash
+docker-compose up -d --build
 ```
 
-### Используемые модели
+The checked-in Compose file maps host `/data/srv/data/llmbot` to container
+`/data`, mounts `.env` read/write, and sets `TZ=Europe/Moscow`.
 
-Бот использует primary + fallback runtime-модели для парсинга команд и анализа переписок.
-По умолчанию primary — `meta-llama/llama-3.3-70b-instruct:free`, fallback — `openrouter/free`.
-Изменение через `/setmodel primary <model>` и `/setmodel fallback <model>`.
+## Telegram commands
 
-Для `primary` и `fallback` можно задать список моделей через запятую:
+| Command | Behavior |
+| --- | --- |
+| `/start` | Show introduction and current LLM settings. |
+| `/help` | Show commands and examples. |
+| `/folders` | List Telegram folders returned by Telethon. |
+| `/context` | Show the in-memory target and period. |
+| `/reset` | Clear in-memory context. |
+| `/llmconfig` | Show primary/fallback URL, model lists, and masked tokens. |
+| `/limits [primary\|fallback]` | Call an OpenRouter-style key-limits endpoint; defaults to primary. |
+| `/seturl [primary\|fallback] <url>` | Change and persist an endpoint; defaults to primary. |
+| `/setmodel primary\|fallback <model[,model2,...]>` | Change and persist an ordered model list; scope is required. |
+| `/settoken [primary\|fallback] <token>` | Change and persist a token; defaults to primary. |
+| `/schedules` | List persisted periodic jobs. |
+| `/delschedule <id>` | Delete a persisted job and its in-process scheduler entry. |
+
+All commands and free-text requests are admin-only.
+
+## Natural-language examples
+
+Single chat:
 
 ```text
-/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
-/setmodel fallback openrouter/free,deepseek/deepseek-chat-v3-0324:free
-```
-
-Логика выбора такая:
-- внутри одной попытки бот перебирает модели по порядку без паузы
-- если модель вернула `429` или некачественный ответ, бот сразу пробует следующую
-- пауза применяется только после полного неуспешного прохода по всему списку
-- затем бот повторяет тот же список моделей
-
-## Использование
-
-После запуска бота найдите его в Telegram и отправьте `/start`.
-
-📖 **[Полный список примеров в EXAMPLES.md](docs/EXAMPLES.md)**
-
-### Основные примеры команд
-
-#### Суммаризация
-```
-Суммаризируй что происходило в чате Работа за последние сутки
-```
-```
-Сделай краткую выжимку из чата Проект за неделю
-```
-```
-Что обсуждали вчера в личке с Иваном?
-```
-```
-Что сегодня писали в чате Команда?
-```
-```
-Покажи что было за последний час в чате Поддержка
-```
-```
-Дай последние 500 сообщений из чата Разработка
-```
-
-#### Работа с контекстом
-```
 Суммаризируй чат Работа за неделю
-# Бот анализирует и запоминает чат "Работа" и период "неделя"
-
-О чем договорились?
-# Бот использует тот же чат и период!
-
-А какие следующие шаги?
-# Снова тот же чат и период
+Что сегодня писали в личке с Иваном?
+Покажи последние 500 сообщений из чата Release
+Суммаризируй непрочитанные в чате Поддержка и отметь как прочитанные
 ```
 
-#### Свободные запросы
-```
-О чем говорили в чате Проект на тему дедлайнов?
-```
-```
-До чего договорились в чате Команда, какие следующие шаги?
-```
-```
-Что писал Александр в чате Встречи?
+Folder:
+
+```text
+Суммаризируй непрочитанные во всех чатах папки AI
+Что решили в папке Проекты за последние 3 дня?
+Суммаризируй папку Новости и отметь как прочитанные
 ```
 
-#### Нечеткий поиск чатов
+One-request model override:
+
+```text
+Суммаризируй папку AI с помощью anthropic/claude-opus-4.6
 ```
-Найди чат "Замедл"
-# Бот найдет "Замедление в такси-зоне" с 75% схожестью
+
+Schedule:
+
+```text
+Суммаризируй папку AI каждый день в 20:00
+Суммаризируй чат Работа каждую неделю в 09:00
+Суммаризируй папку Новости раз в 3 дня в 19:30
 ```
 
-## Архитектура
+A recurring request is saved instead of running immediately. Weekly and monthly
+jobs are anchored to the local weekday/day on which they are created.
 
-1. **Telegram Bot API** (`python-telegram-bot`) - получение команд от пользователя
-2. **Telethon** - доступ к истории всех чатов от вашего имени
-3. **OpenRouter-compatible API** - доступ к LLM модели
+More examples: [docs/EXAMPLES.md](docs/EXAMPLES.md).
 
-### Процесс обработки команды
+## Period semantics
 
-1. **Получение команды:** Пользователь отправляет запрос боту на естественном языке
-2. **Парсинг:** Бот отправляет текст в настроенную LLM-модель для парсинга команды
-3. **Извлечение структуры:** AI возвращает JSON с названием чата, периодом и запросом
-4. **Контекст:** Если чат/период не указаны, используется сохраненный контекст
-5. **Поиск чата:** Telethon находит нужный чат (с нечетким поиском ~72% схожести)
-6. **Загрузка истории:**
-   - За N часов: "за последний час", "за последние 5 часов"
-   - За N дней: "за неделю", "за 3 дня", "вчера"
-   - Сегодня: "сегодня" (с начала суток)
-   - Последние N сообщений: "последние 100 сообщений"
-   - По умолчанию: последние 300 сообщений
-7. **Обработка:** История + запрос отправляются в ту же LLM-модель для анализа
-8. **Анализ:** AI анализирует переписку и генерирует ответ
-9. **Сохранение контекста:** Чат и период сохраняются для следующих запросов
-10. **Результат:** Бот отправляет ответ пользователю
+| Parsed period | Selection |
+| --- | --- |
+| `days=N` | Current UTC time minus N × 24 hours. “Вчера” and “за сутки” both map to the last 24 hours. |
+| `hours=N` | Current UTC time minus N hours. |
+| `today` | Local midnight through now. |
+| `last_messages=N` | Latest N messages, returned to the LLM chronologically. |
+| `unread` | Messages above the known `read_inbox_max_id`, limited by unread count or the default. |
+| omitted | Context period when available; otherwise latest 300 messages. |
 
-## Безопасность
+Folder membership follows Telegram filter include/pinned peers, dynamic type
+flags, and read/muted/archive exclusions. Chat and folder fuzzy matches are
+accepted at similarity `>= 0.5`.
 
-### Хранение данных
+## LLM behavior
 
-**Файл `.env`:**
-- ✅ Содержит все API ключи и токены
-- ✅ Автоматически исключен из git (`.gitignore`)
-- ✅ Рекомендуется установить права доступа: `chmod 600 .env`
-- 📌 Это стандартная практика для хранения конфигурации
+Primary candidates are tried in configured order for all retry rounds before
+fallback scope begins. Free models use independent primary/fallback pacing and
+429 backoff. Provider responses can be rejected for suspicious artifacts,
+unsupported dates, or other quality problems.
 
-**Telethon сессия:**
-- ✅ Файл `telethon_session.session` сохраняет авторизацию
-- ✅ Избавляет от необходимости вводить код при каждом запуске
-- ✅ Данные зашифрованы и безопасны
-- ✅ Автоматически исключен из git
-- 📌 Рекомендуется установить права доступа: `chmod 600 *.session`
+Yandex Cloud uses:
 
-### Доступ к боту
+```dotenv
+PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
+PRIMARY_LLM_API_KEY=...
+```
 
-- ✅ Бот работает только с одним пользователем (проверка `ADMIN_USER_ID`)
-- ✅ Даже если кто-то узнает токен бота, он не сможет его использовать
-- ⚠️ Не делитесь своими API ключами и токенами
+The bot then sends `Authorization: Api-Key` and derives `x-folder-id` from the
+model URI. `/limits` is not supported for Yandex Cloud.
 
-### Рекомендации
+## Runtime files and privacy
 
-1. После создания `.env` файла выполните: `chmod 600 .env`
-2. После первого запуска выполните: `chmod 600 *.session`
-3. Регулярно обновляйте зависимости: `pip install -U -r requirements.txt`
-4. Храните резервные копии `.env` в безопасном месте
+Ignored runtime state:
 
-## Требования
+- `.env`: Telegram and LLM credentials;
+- `*.session`: Telethon authorization;
+- `schedules.db`: periodic jobs and original queries;
+- `bot.log`: application log;
+- `llm_traffic.log`: complete LLM payloads and responses;
+- `venv/`: local Python environment.
 
-- Python 3.11 - 3.13 (рекомендуется 3.11 или 3.12)
-- Активный Telegram аккаунт
-- OpenRouter API ключ (опционально, можно задать через `/settoken`)
+`llm_traffic.log` contains chat history sent to providers. It is not a sanitized
+audit log. Do not publish logs, `.env`, session files, or schedule databases.
 
-**Примечание:** Python 3.14 пока не поддерживается из-за несовместимости библиотек.
+Runtime LLM commands update `.env` atomically. In-memory context is lost on
+restart. Schedules survive restart.
 
-## Лицензия
+## Development
 
-MIT
+```bash
+./setup.sh --dev
+venv/bin/python -m pytest
+```
 
-## Troubleshooting
+Pytest enforces configured coverage of at least 50% across `bot`, `config`,
+`llm_runtime`, and `schedule_runtime`.
 
-Если возникли проблемы, проверьте:
-1. 📖 [docs/FAQ.md](docs/FAQ.md) - часто задаваемые вопросы и решения
-2. Логи бота в консоли на наличие ошибок
-3. Все ли переменные окружения заполнены в `.env` (бот проверяет это при запуске)
+Documentation index:
 
-## Поддержка
+- [AI development guide](docs/AI_DEVELOPMENT.md)
+- [Schemas](docs/SCHEMAS.md)
+- [Quick start](docs/QUICKSTART.md)
+- [Installation and venv repair](docs/INSTALL.md)
+- [Examples](docs/EXAMPLES.md)
+- [FAQ](docs/FAQ.md)
+- [Project structure](docs/PROJECT_STRUCTURE.md)
+- [Changelog](docs/CHANGELOG.md)
 
-Если ваша проблема не решена:
-1. Проверьте [docs/FAQ.md](docs/FAQ.md)
-2. Проверьте [docs/EXAMPLES.md](docs/EXAMPLES.md) для примеров использования
-3. Создайте Issue в репозитории с описанием проблемы и логами
+License: MIT.

@@ -1,112 +1,71 @@
 # Changelog
 
-Все значительные изменения в этом проекте будут документированы в этом файле.
+This file records repository changes, not planned features. Current runtime
+behavior is defined by code and tests.
 
-## [1.2.0] - 2026-03-06
+## Unreleased
+
+### Added
+
+- Canonical agent guide in `docs/AI_DEVELOPMENT.md`.
+- Machine-readable parser-command and schedule-record schemas.
+- Repository contract tests that compare code, schemas, SQLite columns,
+  documented commands, `env.example`, and Docker runtime modules.
 
 ### Changed
-- 🔄 Полностью удалена интеграция со старым LLM-провайдером
-- 🌐 LLM вызовы переведены на OpenRouter-compatible Chat Completions API (`Bearer` auth)
-- ⚙️ Добавлены runtime-настройки LLM: URL, токен и модель
+
+- Rebuilt all documentation from current code behavior, including folders,
+  unread boundaries, explicit mark-as-read, schedules, one-request model
+  overrides, provider differences, persistence, and privacy.
+- `setup.sh` is non-interactive, validates Python 3.11-3.13, repairs unhealthy
+  environments, supports `--dev` and `--recreate`, and preserves `.env`.
+- `start.sh` validates interpreter compatibility and runtime imports before
+  launching with `exec`.
+- Runtime/dev dependencies now have compatibility upper bounds.
+- Docker build compiles every runtime module.
+- Compose declares explicit build configuration, init handling, graceful stop,
+  environment mapping, and writable `.env`.
+- Coverage now includes `schedule_runtime`.
+
+### Fixed
+
+- Existing but broken `venv/` directories no longer pass setup/start checks.
+- Removed documentation claims that “yesterday” means a calendar day, that
+  Telethon sessions should be assumed encrypted, or that chat content is never
+  stored locally despite full LLM traffic logging.
+
+## 1.2.0 - 2026-03-06
+
+### Changed
+
+- Removed the previous provider-specific LLM integration.
+- Moved LLM calls to OpenRouter-compatible Chat Completions.
+- Added mutable URL, token, and model configuration.
 
 ### Added
-- 🧩 Команды управления LLM в чате:
-  - `/llmconfig` — показать текущие настройки
-  - `/seturl` — задать endpoint
-  - `/settoken` — задать API ключ
-  - `/setmodel` — задать модель
-- 🧪 Полный набор автотестов для core-модулей и конфигов
-- 📈 Проверка покрытия тестов для всех основных модулей проекта
 
-## [1.0.0] - 2025-12-10
+- `/llmconfig`
+- `/seturl`
+- `/settoken`
+- `/setmodel`
+- Initial automated tests and coverage configuration.
+
+## 1.0.0 - 2025-12-10
 
 ### Added
-- ✨ Первый релиз бота для анализа Telegram чатов
-- 🤖 **Интеграция с OpenRouter API:**
-  - DeepSeek v3.1 Terminus для парсинга команд
-  - Alice AI LLM (235B) для обработки и анализа переписок
-- 📊 **Суммаризация переписок** - получение краткого резюме обсуждений за любой период
-- 💬 **Свободные запросы** - вопросы о содержании чатов ("о чем говорили?", "до чего договорились?")
-- 🤖 **Естественный язык** - команды описываются обычным текстом, AI понимает запросы
-- 📅 **Гибкие периоды времени:**
-  - По часам: "за последний час", "за последние 5 часов"
-  - Сегодня: "сегодня" (с начала суток до текущего момента)
-  - По дням: "вчера", "за неделю", "за 3 дня"
-  - По количеству: "последние 100 сообщений", "последние 1000 сообщений"
-- 🔍 **Умный поиск чатов** - находит чаты даже при неточном совпадении названия (fuzzy matching)
-- 💾 **Контекст запросов** - запоминает последний чат и период для быстрых запросов
-- 🔐 **Доступ ко всем чатам** - через Telethon получаем доступ ко всей истории переписок
-- 🔒 **Безопасность** - работает только для одного пользователя (ADMIN_USER_ID)
-- ⚡ **Простота** - фиксированные модели в config.py, никакой дополнительной настройки
 
-### Commands
-- `/start` - приветствие и информация о боте
-- `/help` - показать все доступные команды
-- `/context` - показать текущий контекст (последний чат и период)
-- `/reset` - сбросить контекст
+- Initial single-admin Telegram chat analyzer.
+- Telegram Bot API control plane and Telethon user client.
+- Natural-language chat parsing and LLM analysis.
+- Days, hours, today, and last-N-message selection.
+- Fuzzy chat search.
+- In-memory target/period context.
+- `.env` credential loading and Telethon session persistence.
 
-### Technical Details
-- Python 3.11-3.13 support
-- `python-telegram-bot` v20.8 для Bot API
-- `telethon` для доступа к истории чатов как user client
-- `requests` для HTTP запросов к OpenRouter API
-- Async/await архитектура
-- Сохранение Telethon сессии для избежания повторной авторизации
-- Безопасное хранение credentials в `.env`
-- Детальное логирование HTTP-запросов для отладки
+## Reporting changes
 
-### Documentation
-- 📖 README.md - обзор и установка
-- 🚀 QUICKSTART.md - быстрый старт за 5 минут
-- 💡 EXAMPLES.md - примеры использования
-- ❓ FAQ.md - часто задаваемые вопросы
-- 🛠️ INSTALL.md - подробная установка
-- 📁 PROJECT_STRUCTURE.md - структура проекта
+Repository: [kab7/llmbot](https://github.com/kab7/llmbot).
 
-## Типы изменений
-
-- `Added` - новая функциональность
-- `Changed` - изменения в существующей функциональности
-- `Deprecated` - функциональность, которая скоро будет удалена
-- `Removed` - удаленная функциональность
-- `Fixed` - исправление багов
-- `Security` - уязвимости безопасности
-
-## Планы на будущее
-
-### В разработке
-- 📊 Экспорт результатов анализа в файлы
-- 📈 Визуализация статистики чатов
-- 🔔 Мониторинг чатов в реальном времени
-- 💾 База данных для хранения истории запросов
-- 🎨 Кастомизация промптов для LLM
-
-### Рассматриваются
-- 🔄 Интеграция с другими мессенджерами (WhatsApp, Slack)
-- 🤝 Групповой доступ (несколько admin пользователей)
-- 🎯 Предустановленные шаблоны запросов
-- 🌍 Мультиязычность интерфейса
-- 🔧 Тонкая настройка параметров моделей (temperature, max_tokens)
-
-## Как сообщить об ошибке
-
-1. Проверьте, что ошибка воспроизводится на последней версии
-2. Проверьте, нет ли уже похожей issue
-3. Создайте новую issue с:
-   - Описанием проблемы
-   - Шагами для воспроизведения
-   - Ожидаемым и фактическим поведением
-   - Логами из консоли
-   - Версией Python и ОС
-
-## Как предложить улучшение
-
-1. Откройте issue с описанием предложения
-2. Объясните, какую проблему оно решает
-3. Опишите альтернативные решения, если есть
-4. Дождитесь обсуждения
-
----
-
-**Формат:** Этот changelog следует принципам [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
-и проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
+Bug reports should include sanitized reproduction steps, expected and actual
+behavior, Python version, deployment mode, and safe log excerpts. Never attach
+`.env`, Telegram sessions, schedule databases, or raw `llm_traffic.log`.

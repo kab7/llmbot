@@ -1,301 +1,248 @@
-# Структура проекта
+# Repository structure
 
-```
+Code is the behavioral source of truth. For implementation invariants, also read
+[AI_DEVELOPMENT.md](AI_DEVELOPMENT.md).
+
+```text
 llmbot/
-│
-├── bot.py                 # Основной файл бота
-├── llm_runtime.py         # Runtime-настройки LLM (url/token/model)
-├── config.py              # Конфигурация и настройки (включая модели)
-├── requirements.txt       # Python зависимости
-├── requirements-dev.txt   # Зависимости для тестов
-├── pyproject.toml         # Конфигурация pytest/coverage
-│
-├── .env                   # Переменные окружения (создается вручную)
-├── env.example            # Пример файла .env
-├── .gitignore             # Игнорируемые Git файлы
-│
-├── setup.sh               # Скрипт автоматической установки
-├── start.sh               # Скрипт запуска бота
-│
-├── README.md              # Главная документация (входная точка)
-├── CLAUDE.md              # Технические заметки для агента
+├── AGENTS.md
+├── CLAUDE.md
+├── README.md
+├── bot.py
+├── config.py
+├── llm_runtime.py
+├── schedule_runtime.py
+├── pyproject.toml
+├── requirements.txt
+├── requirements-dev.txt
+├── setup.sh
+├── start.sh
+├── Dockerfile
+├── docker-compose.yml
+├── env.example
 ├── docs/
+│   ├── AI_DEVELOPMENT.md
+│   ├── SCHEMAS.md
 │   ├── QUICKSTART.md
 │   ├── INSTALL.md
 │   ├── EXAMPLES.md
 │   ├── FAQ.md
+│   ├── PROJECT_STRUCTURE.md
 │   ├── CHANGELOG.md
-│   └── PROJECT_STRUCTURE.md
-│
-├── telethon_session.session   # Сессия Telethon (создается автоматически)
-├── telethon_session.session-journal  # Журнал сессии
-│
-├── tests/                 # Автотесты
-└── venv/                  # Виртуальное окружение Python (создается автоматически)
+│   └── schemas/
+│       ├── parser-command.schema.json
+│       └── schedule-record.schema.json
+└── tests/
+    ├── test_bot_llm_api.py
+    ├── test_bot_llm_commands.py
+    ├── test_bot_utils.py
+    ├── test_config.py
+    ├── test_llm_runtime.py
+    ├── test_schedule_runtime.py
+    └── test_repository_contracts.py
 ```
 
-## Описание файлов
+Ignored runtime files can appear beside source:
 
-### Основные файлы
-
-#### `bot.py`
-Главный файл приложения. Содержит:
-- Логику работы с Telegram Bot API
-- Интеграцию с Telethon для доступа к истории
-- Функции для работы с OpenRouter-compatible LLM API
-- Обработчики команд пользователя
-- Парсинг и обработку запросов
-- Управление контекстом запросов
-- Нечеткий поиск чатов
-
-**Основные компоненты:**
-- `call_llm_api()` - универсальный интерфейс к LLM через OpenRouter API
-- `find_chat_by_name()` - нечеткий поиск чатов
-- `get_chat_history()` - загрузка истории сообщений с поддержкой гибких периодов
-- `parse_command_with_gpt()` - парсинг команд пользователя
-- `process_user_message()` - обработка текстовых сообщений
-- `start_command()` - команда /start
-- `help_command()` - команда /help
-- `context_command()` - команда /context
-- `reset_command()` - команда /reset
-- `main()` - главная функция запуска
-
-**Глобальные переменные:**
-- `current_context` - текущий контекст (chat_name, period_type, period_value)
-- `telethon_client` - клиент Telethon
-
-#### `config.py`
-Конфигурация приложения:
-- Загрузка переменных окружения из `.env`
-- Настройки Telegram Bot API
-- Настройки Telethon
-- Настройки OpenRouter API
-- Настройки моделей по умолчанию
-- Имя файла сессии Telethon
-
-**Основные константы:**
-- `DEFAULT_MESSAGES_LIMIT = 300` - количество сообщений по умолчанию
-- `DEFAULT_LLM_URL` - URL OpenAI-compatible endpoint
-- `DEFAULT_LLM_MODEL` - модель по умолчанию
-- `DEFAULT_LLM_TOKEN` - ключ по умолчанию из `PRIMARY_LLM_API_KEY`
-- `PARSER_PROMPT` - system prompt для парсинга команд пользователя
-- `PROCESSOR_PROMPT` - system prompt для обработки и анализа переписок
-
-**Изменение моделей:**
-Отредактируйте константы в `config.py` или меняйте значения на лету через команды:
-1. `/seturl` - URL endpoint
-2. `/setmodel` - модель
-3. `/settoken` - API ключ
-
-**Изменение промптов:**
-Промпты для LLM вынесены в `config.py` и легко настраиваются:
-- `PARSER_PROMPT` - инструкции для парсинга команд в JSON
-- `PROCESSOR_PROMPT` - инструкции для анализа истории чатов
-
-### Скрипты
-
-#### `setup.sh`
-Автоматическая установка:
-- Проверка наличия Python
-- Создание виртуального окружения
-- Установка зависимостей из `requirements.txt`
-- Предложение создать `.env` из `env.example`
-
-#### `start.sh`
-Запуск бота:
-- Проверка версии Python (3.11-3.13)
-- Активация виртуального окружения
-- Запуск `bot.py`
-
-### Конфигурационные файлы
-
-#### `.env`
-Файл переменных окружения (создается вручную):
-- `TELEGRAM_BOT_TOKEN` - токен бота от BotFather
-- `TELEGRAM_API_ID` - API ID от my.telegram.org
-- `TELEGRAM_API_HASH` - API Hash от my.telegram.org
-- `TELEGRAM_PHONE` - номер телефона для Telethon
-- `PRIMARY_LLM_API_KEY` - API ключ для OpenRouter-compatible API (опционально)
-- `ADMIN_USER_ID` - Telegram ID администратора
-
-**Безопасность:**
-- Исключен из Git (`.gitignore`)
-- Рекомендуется `chmod 600 .env`
-- Никогда не коммитить в репозиторий
-
-#### `env.example`
-Пример файла `.env` с пояснениями:
-- Показывает все необходимые переменные
-- Содержит комментарии и примеры значений
-- Используется как шаблон для создания `.env`
-
-#### `requirements.txt`
-Python зависимости:
-- `python-telegram-bot>=21.0` - Telegram Bot API
-- `telethon` - доступ к истории Telegram
-- `requests` - HTTP-запросы к LLM API
-- `python-dotenv` - загрузка переменных из `.env`
-
-#### `requirements-dev.txt`
-Зависимости для тестов и отчета покрытия:
-- `pytest`
-- `coverage`
-- `pytest-cov`
-
-### Документация
-
-#### `README.md`
-Главная документация:
-- Обзор возможностей
-- Быстрая установка
-- Настройка и запуск
-- Базовые примеры
-- Архитектура проекта
-- Безопасность
-- Troubleshooting
-
-#### `docs/QUICKSTART.md`
-Быстрый старт за 5 минут:
-- Пошаговая инструкция
-- Минимальная настройка
-- Первый запуск
-- Базовые команды
-
-#### `docs/INSTALL.md`
-Подробная установка:
-- Установка Python на разных ОС
-- Создание виртуального окружения
-- Установка зависимостей
-- Получение API ключей
-- Настройка переменных окружения
-- Troubleshooting установки
-
-#### `docs/EXAMPLES.md`
-Примеры использования:
-- Базовые команды
-- Работа с контекстом
-- Нечеткий поиск
-- Свободные запросы
-- Управление настройками
-- Продвинутые сценарии
-- Комбинирование функций
-
-#### `docs/FAQ.md`
-Часто задаваемые вопросы:
-- Установка и настройка
-- Использование
-- Технические вопросы
-- Безопасность
-- Производительность
-- Troubleshooting
-
-#### `docs/CHANGELOG.md`
-История изменений:
-- Список всех изменений по версиям
-- Новые функции
-- Исправления багов
-- Планы на будущее
-
-### Генерируемые файлы
-
-#### `telethon_session.session`
-Файл сессии Telethon:
-- Создается автоматически при первом запуске
-- Сохраняет авторизацию в Telegram
-- Зашифрован и безопасен
-- Исключен из Git
-- Рекомендуется `chmod 600 *.session`
-
-#### `venv/`
-Виртуальное окружение Python:
-- Создается через `python3 -m venv venv`
-- Содержит изолированные Python пакеты
-- Не включается в Git
-- Активируется через `source venv/bin/activate`
-
-## Архитектура кода
-
-### Логика обработки запроса
-
-```
-Пользователь
-    ↓
-[Telegram Bot API]
-    ↓
-process_user_message()
-    ↓
-parse_command_with_gpt()
-    ↓
-call_llm_api() → [OpenRouter-compatible API]
-    ↓
-[JSON команда: chat, period, query]
-    ↓
-find_chat_by_name() → [Telethon]
-    ↓
-[Entity чата + схожесть]
-    ↓
-get_chat_history() → [Telethon]
-    ↓
-[История сообщений]
-    ↓
-process_chat_with_openai()
-    ↓
-call_llm_api() → [OpenRouter-compatible API]
-    ↓
-[Анализ/суммаризация]
-    ↓
-[Telegram Bot API]
-    ↓
-Пользователь
+```text
+.env
+venv/
+*.session
+schedules.db*
+bot.log*
+llm_traffic.log*
+.coverage
+htmlcov/
 ```
 
-### Управление контекстом
+## Runtime modules
+
+### `bot.py`
+
+Composition root and main application module. It contains:
+
+- rotating log setup;
+- admin authorization decorator;
+- parser normalization and deterministic intent guards;
+- primary/fallback LLM HTTP execution;
+- free-model pacing and 429 backoff;
+- summary validation and cleanup;
+- Telethon initialization and reconnect logic;
+- chat and folder lookup;
+- Telegram folder-filter reproduction;
+- history and unread selection;
+- read acknowledgement;
+- output formatting and Telegram chunking;
+- bot command handlers;
+- natural-language request orchestration;
+- APScheduler integration;
+- startup and shutdown lifecycle.
+
+Key orchestration functions:
+
+```text
+main
+process_user_message
+parse_command_with_gpt
+validate_command_payload
+_resolve_single_chat / _resolve_folder_chats
+_process_single_chat
+get_chat_history
+_process_chat_with_openai_result
+_call_llm_api_internal
+init_scheduler / run_scheduled_summary_job
+```
+
+Global process state:
+
+```text
+telethon_client
+current_context
+llm_runtime
+scheduler
+application_ref
+schedules_lock
+```
+
+### `config.py`
+
+Loads `.env` at import time and exposes:
+
+- required Telegram/admin settings;
+- path, logging, timeout, retry, and pacing settings;
+- primary/fallback LLM defaults;
+- `get_config_issues()`;
+- `PARSER_PROMPT`;
+- `PROCESSOR_PROMPT`.
+
+Integer environment values use `_parse_int_env()`. Invalid integers fall back to
+the supplied default; required positive IDs then fail startup validation.
+
+### `llm_runtime.py`
+
+Contains:
+
+- `LLMSettings`;
+- URL validation and chat-completions normalization;
+- comma-separated model normalization;
+- primary/fallback mutable settings;
+- inherited or independent fallback tokens;
+- candidate ordering and deduplication;
+- token masking;
+- Yandex host and folder-ID helpers.
+
+This module does not perform HTTP calls.
+
+### `schedule_runtime.py`
+
+Contains the schedule persistence/data layer:
+
+- recurrence constants;
+- SQLite `schedules` table creation;
+- additive `requested_model` migration;
+- row conversion;
+- next-run calculations;
+- record construction;
+- full-table load/save;
+- recurrence display text.
+
+It does not import Telegram or APScheduler. `bot.py` validates records, serializes
+access with an asyncio lock, and registers scheduler jobs.
+
+## Application flow
+
+```text
+Telegram Bot API
+  -> @admin_only
+  -> process_user_message
+  -> parser LLM
+  -> validate_command_payload
+  -> deterministic source-text guards
+  -> context resolution
+  -> schedule persistence OR target resolution
+  -> Telethon history selection
+  -> processor LLM
+  -> response validation/cleanup
+  -> Telegram HTML/plain output
+  -> optional read acknowledgement
+```
+
+Folder requests branch from target resolution into a sequential per-chat loop.
+
+## Persistence
+
+### `.env`
+
+Loaded by `config.py`. Runtime LLM commands atomically replace this file through
+a temporary sibling file. Paths are relative to the process working directory
+unless configured as absolute.
+
+### Telethon session
+
+`SESSION_NAME` is passed to `TelegramClient`. The resulting session is sensitive
+account authentication material.
+
+### SQLite schedules
+
+`SCHEDULES_FILE` points to a SQLite database. Canonical columns and types are
+documented in
+[`schemas/schedule-record.schema.json`](schemas/schedule-record.schema.json).
+
+### Context
+
+`current_context` is an in-memory dictionary:
 
 ```python
-current_context = {
-    "chat_name": "название чата",
-    "period_type": "days" | "hours" | "today" | "last_messages" | None,
-    "period_value": число | None
+{
+    "target_type": "chat" | "folder",
+    "target_name": str,
+    "period_type": "days" | "hours" | "today" | "last_messages" | "unread" | None,
+    "period_value": int | None,
 }
 ```
 
-Бот запоминает последний использованный чат и период. Для одного пользователя не нужен словарь по `user_id`.
+It is not persisted.
 
-## Расширение функциональности
+## Build and packaging
 
-### Добавление новой команды
+### `setup.sh`
 
-1. Создайте async функцию-обработчик:
-```python
-async def my_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ответ")
-```
+Creates or repairs the local `venv`, installs runtime dependencies, optionally
+installs dev dependencies, and initializes `.env` without overwriting it.
 
-2. Зарегистрируйте обработчик в `main()`:
-```python
-application.add_handler(CommandHandler("my_command", my_command))
-```
+### `start.sh`
 
-## Лучшие практики
+Validates the local Python version and runtime imports, then uses `exec` to run
+`bot.py`.
 
-### Разработка
-- Используйте виртуальное окружение
-- Следуйте PEP 8 для стиля кода
-- Документируйте новые функции
-- Тестируйте изменения перед коммитом
+### Docker
 
-### Безопасность
-- Никогда не коммитьте `.env`
-- Используйте `chmod 600` для чувствительных файлов
-- Регулярно обновляйте зависимости
-- Проверяйте логи на утечки credentials
+The Dockerfile installs runtime dependencies, copies all four runtime modules,
+and compiles them before setting the command. Compose mounts mutable state under
+`/data`.
 
-### Производительность
-- Используйте async/await где возможно
-- Кэшируйте результаты где уместно
-- Оптимизируйте размер загружаемой истории
-- Выбирайте подходящие модели для задач
+No Python package/wheel is built; the project runs directly from source files.
 
----
+## Tests
 
-**Вопросы?** Проверьте [FAQ.md](FAQ.md) или создайте Issue.
+| File | Contract |
+| --- | --- |
+| `test_bot_llm_api.py` | HTTP candidates, fallback, pacing, parser, processor, history, unread, scheduled failure. |
+| `test_bot_llm_commands.py` | Runtime commands and top-level user-message orchestration. |
+| `test_bot_utils.py` | Guards, formatting, matching, folders, Telethon helpers, scheduler initialization. |
+| `test_config.py` | Environment parsing and required/optional validation. |
+| `test_llm_runtime.py` | Mutable model settings and provider helpers. |
+| `test_schedule_runtime.py` | Recurrence calculations and SQLite persistence. |
+| `test_repository_contracts.py` | Code-to-schema, command documentation, env inventory, SQLite columns, Docker module inventory. |
+
+`pyproject.toml` configures pytest and coverage for every runtime Python module.
+
+## Extension boundaries
+
+- Parser changes must update prompt, validator, guards, JSON schema, schedules
+  when relevant, docs, and tests.
+- Schedule-field changes must update SQLite migration, column ordering,
+  serialization, validation, JSON schema, display, and tests.
+- New bot commands must remain `@admin_only`, be registered in `main`, documented,
+  and added to the repository contract test.
+- New runtime modules must be copied by Docker and added to coverage source.

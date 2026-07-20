@@ -1,178 +1,127 @@
-# Быстрый старт за 5 минут 🚀
+# Quick start
 
-Следуйте этим шагам для быстрого запуска бота.
+This file mirrors the current startup and command paths in the code.
 
-## Шаг 1: Клонируйте репозиторий
+## 1. Clone and install
+
+Use Python 3.11-3.13:
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/kab7/llmbot.git
 cd llmbot
+./setup.sh --dev
 ```
 
-## Шаг 2: Запустите автоматическую установку
+Useful setup options:
 
 ```bash
-./setup.sh
+./setup.sh --recreate       # force a clean venv
+./setup.sh --dev --recreate # clean venv with test dependencies
+PYTHON_BIN=python3.12 ./setup.sh --dev
 ```
 
-Скрипт автоматически:
-- Проверит наличие Python
-- Создаст виртуальное окружение
-- Установит все зависимости
+The script automatically rebuilds a missing, broken, or unsupported `venv`.
 
-## Шаг 3: Получите API ключи
+## 2. Configure `.env`
 
-### 3.1 Telegram Bot Token
-1. Откройте [@BotFather](https://t.me/botfather)
-2. Отправьте `/newbot`
-3. Следуйте инструкциям и скопируйте токен
+`setup.sh` copies `env.example` only if `.env` does not already exist.
 
-### 3.2 Telethon API
-1. Перейдите на [https://my.telegram.org](https://my.telegram.org)
-2. Войдите и перейдите в "API development tools"
-3. Создайте приложение
-4. Скопируйте `api_id` и `api_hash`
+Required:
 
-### 3.3 OpenRouter API Key (опционально)
-1. Перейдите на https://openrouter.ai/keys
-2. Создайте API ключ
-3. Ключ можно задать в `.env` или позже через `/settoken`
-
-### 3.4 Ваш Telegram ID
-1. Откройте [@userinfobot](https://t.me/userinfobot)
-2. Отправьте любое сообщение
-3. Скопируйте ваш ID
-
-## Шаг 4: Настройте .env
-
-Создайте файл `.env`:
-
-```bash
-cp env.example .env
-nano .env  # или используйте любой текстовый редактор
-```
-
-Заполните:
-
-```env
-# Telegram
-TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-TELEGRAM_API_ID=12345678
-TELEGRAM_API_HASH=abcdef123456...
+```dotenv
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_API_ID=...
+TELEGRAM_API_HASH=...
 TELEGRAM_PHONE=+79991234567
+ADMIN_USER_ID=...
+```
 
-# OpenRouter-compatible LLM API (опционально)
-# Получите токен: https://openrouter.ai/keys
+Configure at least one LLM token:
+
+```dotenv
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
-PRIMARY_LLM_API_KEY=your_openrouter_api_key_here
+PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_API_KEY=...
 
 FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
 FALLBACK_LLM_MODEL=openrouter/free
 FALLBACK_LLM_TOKEN=
-
-# Admin
-ADMIN_USER_ID=987654321
 ```
 
-Установите права доступа:
+An empty `FALLBACK_LLM_TOKEN` means the fallback has no token. If the variable is
+absent, the startup value of `PRIMARY_LLM_API_KEY` is copied once; later
+`/settoken primary` changes do not update that copy. Set the fallback token
+explicitly when authenticated fallback is required. See `env.example` for retry,
+pacing, logging, and data-path settings.
 
-```bash
-chmod 600 .env
-```
-
-## Шаг 5: Запустите бота
+## 3. Start
 
 ```bash
 ./start.sh
 ```
 
-При первом запуске Telethon попросит код из Telegram:
-1. Введите код подтверждения
-2. Если включена 2FA, введите пароль
+`start.sh` refuses to launch when `venv` is missing, broken, outside Python
+3.11-3.13, or lacks runtime imports. Repair it with `./setup.sh`.
 
-## Шаг 6: Используйте бота!
+On first Telethon authorization, enter the Telegram login code and optional 2FA
+password. Preserve the generated session file.
 
-Найдите вашего бота в Telegram и отправьте:
+## 4. Verify Telegram behavior
 
-```
+Send:
+
+```text
 /start
-```
-
-### Примеры команд:
-
-**Простая суммаризация:**
-```
-Суммаризируй чат Работа за последнюю неделю
-```
-
-**Гибкие периоды:**
-```
-Что сегодня писали в чате Команда?
-Покажи чат Поддержка за последний час
-Дай последние 500 сообщений из чата Разработка
-```
-
-**Работа с контекстом:**
-```
-Суммаризируй чат Проект за 3 дня
+/folders
+Суммаризируй чат Работа за неделю
 О чем договорились?
-Какие следующие шаги?
+/context
 ```
 
-**Свободный запрос:**
-```
-О чем говорили в чате Команда на тему бюджета?
-```
+Folder and unread examples:
 
-**Полезные команды:**
-```
-/help              # Показать все команды
-/context           # Показать текущий контекст
-/reset             # Сбросить контекст
-/llmconfig         # Показать текущие LLM настройки
-/limits primary    # Показать лимиты primary ключа
-/limits fallback   # Показать лимиты fallback ключа
-/seturl primary <url>        # Поменять primary endpoint
-/seturl fallback <url>       # Поменять fallback endpoint
-/setmodel primary <model>    # Поменять primary модель
-/setmodel primary <model1,model2,...>    # Поменять primary список моделей
-/setmodel fallback <model>   # Поменять fallback модель
-/setmodel fallback <model1,model2,...>   # Поменять fallback список моделей
-/settoken primary <token>    # Поменять primary токен
-/settoken fallback <token>   # Поменять fallback токен
+```text
+Суммаризируй непрочитанные в папке AI
+Суммаризируй непрочитанные в чате Поддержка и отметь как прочитанные
 ```
 
-Если для `primary` или `fallback` задано несколько моделей через запятую, бот перебирает их по порядку в рамках одной попытки. Пауза и retry применяются только после полного неуспешного прохода по всему списку.
+Schedule example:
 
-## Команды бота
+```text
+Суммаризируй папку AI каждый день в 20:00
+/schedules
+/delschedule <id>
+```
 
-- `/start` - приветствие и информация о боте
-- `/help` - показать все доступные команды
-- `/context` - показать текущий контекст (последний чат и период)
-- `/reset` - сбросить контекст
-- `/llmconfig` - показать текущие LLM настройки
-- `/limits [primary|fallback]` - показать лимиты API ключа
-- `/seturl [primary|fallback] <url>` - задать URL OpenAI-compatible API
-- `/setmodel [primary|fallback] <model[,model2,...]>` - задать одну или несколько моделей
-- `/settoken [primary|fallback] <token>` - задать токен
+## 5. Command inventory
 
-**LLM runtime:**
-- URL, токен и модель задаются в `config.py` по умолчанию
-- Во время работы могут быть переопределены через `/seturl`, `/settoken`, `/setmodel`
-- Для `primary` и `fallback` можно задать несколько моделей через запятую
+- `/start`
+- `/help`
+- `/folders`
+- `/context`
+- `/reset`
+- `/llmconfig`
+- `/limits [primary|fallback]`
+- `/seturl [primary|fallback] <url>`
+- `/setmodel primary|fallback <model[,model2,...]>`
+- `/settoken [primary|fallback] <token>`
+- `/schedules`
+- `/delschedule <id>`
 
-## Что дальше?
+`/seturl`, `/setmodel`, and `/settoken` persist changes to `.env`.
 
-- 📖 [README.md](../README.md) - полная документация
-- 📝 [EXAMPLES.md](EXAMPLES.md) - больше примеров использования
-- ❓ [FAQ.md](FAQ.md) - часто задаваемые вопросы
-- 🔧 [INSTALL.md](INSTALL.md) - подробная установка
+## 6. Run tests
 
-## Возникли проблемы?
+```bash
+venv/bin/python -m pytest
+```
 
-1. Проверьте логи в консоли
-2. Запустите `python bot.py` и проверьте подсказки в логах
-3. Посмотрите [FAQ.md](FAQ.md)
+The suite includes command/schema/documentation contracts in addition to unit
+tests for LLM behavior, Telethon selection, folders, unread state, and schedules.
 
-**Готово! Наслаждайтесь использованием бота! 🎉**
+Next:
+
+- [Installation and recovery](INSTALL.md)
+- [Examples](EXAMPLES.md)
+- [FAQ](FAQ.md)
+- [AI development guide](AI_DEVELOPMENT.md)

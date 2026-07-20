@@ -1,138 +1,110 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-echo "🚀 Установка Telegram Chat Analyzer Bot"
-echo "========================================"
-echo ""
+set -euo pipefail
 
-# Проверка наличия Python
-echo "📋 Проверка Python..."
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
 
-# Попробуем найти подходящую версию Python
-PYTHON_CMD=""
-if command -v python3.12 &> /dev/null; then
-    PYTHON_CMD="python3.12"
-elif command -v python3.11 &> /dev/null; then
-    PYTHON_CMD="python3.11"
-elif command -v python3 &> /dev/null; then
-    # Проверяем версию python3
-    VERSION=$(python3 --version | cut -d' ' -f2 | cut -d'.' -f1,2)
-    MAJOR=$(echo $VERSION | cut -d'.' -f1)
-    MINOR=$(echo $VERSION | cut -d'.' -f2)
-    
-    if [ "$MAJOR" -eq 3 ] && [ "$MINOR" -ge 11 ] && [ "$MINOR" -le 13 ]; then
-        PYTHON_CMD="python3"
-    else
-        echo "⚠️  Найден Python $VERSION, но рекомендуется Python 3.11-3.13"
-        echo ""
-        if [ "$MINOR" -eq 14 ]; then
-            echo "❌ Python 3.14 пока не поддерживается из-за несовместимости библиотек!"
-            echo ""
+VENV_DIR="${VENV_DIR:-venv}"
+INSTALL_DEV=false
+FORCE_RECREATE=false
+
+usage() {
+    echo "Usage: ./setup.sh [--dev] [--recreate]"
+    echo "  --dev       install requirements-dev.txt"
+    echo "  --recreate  rebuild the virtual environment even if it is healthy"
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --dev)
+            INSTALL_DEV=true
+            ;;
+        --recreate)
+            FORCE_RECREATE=true
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+is_supported_python() {
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) and sys.version_info[:2] <= (3, 13) else 1)' >/dev/null 2>&1
+}
+
+find_python() {
+    if [[ -n "${PYTHON_BIN:-}" ]]; then
+        if command -v "$PYTHON_BIN" >/dev/null 2>&1 && is_supported_python "$PYTHON_BIN"; then
+            command -v "$PYTHON_BIN"
+            return 0
         fi
-        echo "Установите Python 3.12:"
-        echo "   brew install python@3.12"
-        echo ""
-        read -p "Продолжить с Python $VERSION? (не рекомендуется) (y/n) " -n 1 -r
-        echo ""
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-        PYTHON_CMD="python3"
+        echo "PYTHON_BIN does not point to a supported Python 3.11-3.13: $PYTHON_BIN" >&2
+        return 1
     fi
-else
-    echo "❌ Python не найден!"
-    echo ""
-    echo "Установите Python 3.12 через Homebrew:"
-    echo "   brew install python@3.12"
-    echo ""
+
+    local candidate
+    for candidate in python3.12 python3.13 python3.11 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && is_supported_python "$candidate"; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+venv_is_healthy() {
+    [[ -x "$VENV_DIR/bin/python" ]] &&
+        is_supported_python "$VENV_DIR/bin/python" &&
+        "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1
+}
+
+PYTHON_CMD="$(find_python || true)"
+if [[ -z "$PYTHON_CMD" ]]; then
+    echo "Python 3.11-3.13 was not found."
+    echo "Install Python 3.12 or set PYTHON_BIN to a compatible interpreter."
     exit 1
 fi
 
-PYTHON_VERSION=$($PYTHON_CMD --version)
-echo "✅ Используется: $PYTHON_VERSION ($PYTHON_CMD)"
+echo "Using $("$PYTHON_CMD" --version) at $PYTHON_CMD"
 
-echo ""
-
-# Создание виртуального окружения
-if [ -d "venv" ]; then
-    echo "📦 Виртуальное окружение уже существует"
-    read -p "Пересоздать его с правильной версией Python? (рекомендуется) (y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "🗑️  Удаление старого окружения..."
-        rm -rf venv
-    fi
-fi
-
-if [ ! -d "venv" ]; then
-    echo "📦 Создание виртуального окружения с $PYTHON_CMD..."
-    $PYTHON_CMD -m venv venv
-    if [ $? -eq 0 ]; then
-        echo "✅ Виртуальное окружение создано"
+if [[ "$FORCE_RECREATE" == true ]] || ! venv_is_healthy; then
+    if [[ -d "$VENV_DIR" ]]; then
+        echo "Rebuilding broken or incompatible virtual environment: $VENV_DIR"
     else
-        echo "❌ Ошибка при создании виртуального окружения"
-        exit 1
+        echo "Creating virtual environment: $VENV_DIR"
     fi
-fi
-
-echo ""
-
-# Активация виртуального окружения
-echo "🔌 Активация виртуального окружения..."
-source venv/bin/activate
-
-echo ""
-
-# Обновление pip
-echo "⬆️  Обновление pip..."
-pip install --upgrade pip --quiet
-
-echo ""
-
-# Установка зависимостей
-echo "📚 Установка зависимостей из requirements.txt..."
-pip install -r requirements.txt
-
-if [ $? -eq 0 ]; then
-    echo "✅ Все зависимости установлены"
+    "$PYTHON_CMD" -m venv --clear "$VENV_DIR"
 else
-    echo "❌ Ошибка при установке зависимостей"
-    exit 1
+    echo "Reusing healthy virtual environment: $VENV_DIR"
 fi
 
-echo ""
-echo "========================================"
-echo "✅ Установка завершена успешно!"
-echo "========================================"
-echo ""
+"$VENV_DIR/bin/python" -m pip install --upgrade pip
+"$VENV_DIR/bin/python" -m pip install -r requirements.txt
 
-if [ -f ".env" ]; then
-    echo "✅ Файл .env существует"
-    echo "ℹ️  Проверка конфигурации выполнится автоматически при запуске бота."
+if [[ "$INSTALL_DEV" == true ]]; then
+    "$VENV_DIR/bin/python" -m pip install -r requirements-dev.txt
+fi
+
+if [[ ! -f .env ]]; then
+    cp env.example .env
+    chmod 600 .env
+    echo "Created .env from env.example. Fill required Telegram/admin values."
 else
-    echo "⚠️  Файл .env не найден"
-    echo ""
-    read -p "Создать .env из примера? (y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        cp env.example .env
-        chmod 600 .env
-        echo "✅ Файл .env создан"
-        echo ""
-        echo "📝 Теперь отредактируйте .env и заполните все значения:"
-        echo "   nano .env"
-        echo "   # или откройте в любом редакторе"
-        echo ""
-        echo "После заполнения .env запустите:"
-        echo "   source venv/bin/activate"
-        echo "   python bot.py"
-    fi
+    chmod 600 .env
+    echo "Existing .env preserved."
 fi
 
-echo ""
-echo "📖 Документация:"
-echo "   README.md             - полная инструкция"
-echo "   docs/INSTALL.md       - установка Python и зависимостей"
-echo "   docs/QUICKSTART.md    - быстрый старт"
-echo "   docs/FAQ.md           - частые вопросы"
-echo ""
-echo "🎉 Готово к работе!"
+echo "Setup complete."
+echo "Start the bot with ./start.sh"
+if [[ "$INSTALL_DEV" == true ]]; then
+    echo "Run tests with venv/bin/python -m pytest"
+else
+    echo "Install test dependencies later with ./setup.sh --dev"
+fi

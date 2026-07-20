@@ -8,6 +8,7 @@ source = [
   "bot",
   "config",
   "llm_runtime",
+  "schedule_runtime",
 ]
 
 [tool.coverage.report]

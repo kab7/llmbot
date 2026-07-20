@@ -21,3 +21,4 @@ schedules.db-wal
 .DS_Store
 .coverage
 htmlcov/
+.codex_tmp/

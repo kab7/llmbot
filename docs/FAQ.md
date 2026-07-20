@@ -1,374 +1,229 @@
-# Часто задаваемые вопросы (FAQ)
+# FAQ and operational notes
 
-## Установка и настройка
+## Why does `start.sh` say the venv is broken?
 
-### Где взять Telegram Bot Token?
+It checks all of the following:
 
-1. Найдите [@BotFather](https://t.me/botfather) в Telegram
-2. Отправьте команду `/newbot`
-3. Введите имя бота
-4. Введите username бота (должен заканчиваться на `bot`)
-5. Скопируйте полученный токен в `.env`
+- `venv/bin/python` is executable;
+- Python is 3.11-3.13;
+- pip exists;
+- APScheduler, dotenv, requests, python-telegram-bot, and Telethon import.
 
-### Где взять Telethon API credentials?
-
-1. Перейдите на [https://my.telegram.org](https://my.telegram.org)
-2. Войдите с вашим номером телефона
-3. Перейдите в "API development tools"
-4. Заполните форму создания приложения
-5. Скопируйте `api_id` и `api_hash` в `.env`
-
-### Где взять мой Telegram User ID?
-
-1. Найдите [@userinfobot](https://t.me/userinfobot) в Telegram
-2. Отправьте ему любое сообщение
-3. Скопируйте ваш ID (число) в `.env`
-
-### Как получить OpenRouter API Key?
-
-1. Перейдите на https://openrouter.ai/keys
-2. Создайте API ключ
-3. Вставьте в `.env` как `PRIMARY_LLM_API_KEY`
-
-Ключ можно также задать во время работы бота через `/settoken`.
-
-### Какие модели использует бот?
-
-Бот использует runtime-модель, настроенную в `config.py` по умолчанию.
-Переопределение доступно через команды:
-- `/setmodel [primary|fallback] <model[,model2,...]>` — сменить одну или несколько моделей
-- `/seturl [primary|fallback] <url>` — сменить endpoint
-- `/settoken [primary|fallback] <token>` — сменить ключ
-- `/limits [primary|fallback]` — посмотреть лимиты/квоты ключа
-
-Для `primary` и `fallback` можно задать несколько моделей через запятую. Бот попробует их по порядку в одной попытке, а задержку сделает только после полного неуспешного прохода по списку.
-
-## Использование
-
-### Бот не находит чат
-
-**Не проблема!** Бот использует нечеткий поиск и найдет чат даже при неточном совпадении:
-
-```
-Вы: Найди чат "Замедл"
-Бот: ✅ Найден чат: 'Замедление в такси-зоне' (схожесть: 75%)
-```
-
-**Если чат все равно не найден:**
-- Попробуйте другое написание
-- Используйте часть названия
-- Для личных переписок попробуйте имя или фамилию
-- Проверьте, что чат действительно существует в вашем Telegram
-
-### Какие периоды времени поддерживаются?
-
-Бот поддерживает гибкое указание периодов:
-
-**По дням:**
-- "вчера" - вчерашний день
-- "за сутки" / "за последние сутки" - последние 24 часа
-- "за неделю" - последние 7 дней
-- "за 3 дня" - последние 3 дня
-
-**По часам:**
-- "за последний час" - последние 60 минут
-- "за последние 5 часов" - последние 5 часов
-- "за 12 часов" - последние 12 часов
-
-**Сегодня:**
-- "сегодня" - с начала суток (00:00) до текущего момента
-
-**По количеству сообщений:**
-- "последние 100 сообщений"
-- "последние 500 сообщений"
-- "последние 1000 сообщений"
-
-**Без указания:**
-- По умолчанию загружается 300 последних сообщений (настраивается в `config.py`)
-
-### Бот загружает слишком мало/много сообщений
-
-**Решение:**
-- Явно укажите нужный период: "за последний час", "за неделю"
-- Укажите точное количество: "последние 1000 сообщений"
-- Измените `DEFAULT_MESSAGES_LIMIT` в `config.py` для изменения значения по умолчанию
-
-### Отмечаются ли сообщения как прочитанные при загрузке?
-
-**НЕТ!** Загрузка сообщений через бота **НЕ отмечает** их как прочитанные.
-
-**Что это значит:**
-- Вы можете анализировать любые сообщения из выбранного периода
-- Загрузка не меняет состояние чатов в вашем основном Telegram
-- Отправители не увидят, что вы прочитали сообщения
-- Это "невидимое" чтение для анализа
-
-**Примеры использования:**
-```
-Суммаризируй чат Проект за неделю
-# Получите обзор за указанный период без изменения статуса сообщений
-```
-
-### Как использовать контекст для быстрых запросов?
-
-Бот автоматически запоминает последний чат и период:
-
-```
-Вы: Суммаризируй чат Работа за неделю
-Бот: [Анализирует и запоминает: чат="Работа", период="неделя"]
-
-Вы: О чем договорились?
-Бот: [Использует тот же чат "Работа" и период "неделя"]
-
-Вы: Какие следующие шаги?
-Бот: [Снова использует сохраненный контекст]
-```
-
-**Команды:**
-- `/context` - показать текущий контекст
-- `/reset` - сбросить контекст
-
-### Бот долго обрабатывает запрос
-
-**Причины:**
-- Большой объем истории
-- Проблемы с API
-- Медленное интернет-соединение
-
-**Решение:**
-- Уменьшите период запроса (вместо "за неделю" используйте "за сутки")
-- Укажите меньшее количество сообщений
-- Проверьте подключение к интернету
-- Дождитесь завершения обработки (сильные LLM модели могут отвечать дольше)
-
-### Бот выдает ошибку "Чат не найден"
-
-Используйте нечеткий поиск - бот найдет похожий чат:
-
-```
-Вы: чат "Рабта"
-Бот: ✅ Найден чат: 'Работа' (схожесть: 85%)
-```
-
-Если не помогло:
-- Попробуйте часть названия: "Раб", "бота"
-- Проверьте название чата в Telegram
-- Убедитесь, что у вас есть доступ к этому чату
-
-### Можно ли анализировать архивные чаты?
-
-Да! Бот может анализировать любые чаты, к которым у вас есть доступ, включая архивные.
-
-### Как работает нечеткий поиск?
-
-Бот использует алгоритм схожести строк:
-- Ищет точные совпадения (100%)
-- Ищет частичные совпадения
-- Вычисляет схожесть для всех чатов
-- Возвращает лучший результат если схожесть >= 50%
-
-### Сбрасывается ли контекст при смене чата?
-
-Да, когда вы явно указываете новый чат, контекст обновляется:
-
-```
-Вы: Суммаризируй чат Работа
-Бот: [Контекст: чат="Работа"]
-
-Вы: О чем говорили?
-Бот: [Использует чат "Работа"]
-
-Вы: Суммаризируй чат Проект
-Бот: [Контекст обновлен: чат="Проект"]
-
-Вы: Какие решения?
-Бот: [Использует новый чат "Проект"]
-```
-
-## Технические вопросы
-
-### Какая версия Python поддерживается?
-
-- ✅ Python 3.11 (рекомендуется)
-- ✅ Python 3.12
-- ✅ Python 3.13
-- ⚠️ Python 3.10 (может работать)
-- ❌ Python 3.14 (не поддерживается)
-
-### Бот не запускается после обновления Python
-
-Если вы обновили Python, пересоздайте виртуальное окружение:
+Repair:
 
 ```bash
-rm -rf venv
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./setup.sh --dev --recreate
 ```
 
-### Ошибка "This event loop is already running"
+`setup.sh` also repairs an unhealthy environment without `--recreate`.
 
-Это конфликт между `python-telegram-bot` и `telethon`. Уже исправлено в коде.
+## Which Python versions are supported?
 
-Если ошибка появляется:
-1. Обновите код до последней версии
-2. Перезапустите бота
+Python 3.11-3.13. Docker uses 3.12. Other versions are not part of the tested
+contract.
 
-### Ошибка SSL certificate verification failed
+## Which configuration values are required?
 
-Для OpenRouter это не норма. Проверьте системные сертификаты, прокси и корпоративные MITM-настройки.
+Startup requires valid:
 
-### Ошибка "429 Too Many Requests"
+- `TELEGRAM_BOT_TOKEN`;
+- positive `TELEGRAM_API_ID`;
+- `TELEGRAM_API_HASH`;
+- `TELEGRAM_PHONE`;
+- positive `ADMIN_USER_ID`.
 
-Если используется free-модель, бот применяет две защиты:
-- минимальный интервал между запросами к free-модели
-- backoff после `429`
+An LLM token is optional at startup because `/settoken` can set one later.
+Analysis requires a primary or fallback token.
 
-Если у `primary` или `fallback` задан список моделей через запятую, бот сначала попробует весь список без паузы и только потом сделает backoff перед следующей попыткой.
+## Where do Telegram credentials come from?
 
-Практические варианты:
-- добавить вторую free-модель в `PRIMARY_LLM_MODEL`
-- вынести более дорогую модель в `FALLBACK_LLM_MODEL`
-- увеличить `LLM_MAX_RETRIES` и интервалы backoff в `.env`
+- Bot token: BotFather `/newbot`.
+- API ID/hash: `https://my.telegram.org` → API development tools.
+- Admin user ID: the numeric ID of the one allowed Telegram user.
 
-Вы превысили лимит запросов к API.
+## What targets can be analyzed?
 
-**Решение:**
-- Подождите несколько минут
-- Уменьшите частоту запросов
-- Уменьшите объем обрабатываемых данных
+One user dialog, group, supergroup, channel, or a Telegram folder. The Telethon
+account must be able to see the target.
 
-### Как посмотреть сетевые запросы?
+`/folders` shows filters returned by Telegram. Folder processing includes
+explicit/pinned peers and dynamic filter flags, then applies configured
+read/muted/archive exclusions.
 
-Все HTTP-запросы логируются автоматически:
+## How does fuzzy matching work?
 
-```
-📤 HTTP POST https://llm.api.cloud.yandex.net/...
-📥 HTTP Response: 200
-```
+Matching is case-insensitive and removes emoji:
 
-Проверьте логи в консоли для отладки.
+- exact: 1.0;
+- substring: 0.9;
+- otherwise: `SequenceMatcher`;
+- acceptance threshold: 0.5.
 
-### Бот зависает при первом запуске
+Because 0.5 is permissive, check the bot's visible recognized-command message.
 
-При первом запуске Telethon нужно авторизоваться:
-1. Дождитесь запроса кода
-2. Введите код из Telegram
-3. Если включена 2FA, введите пароль
+## What periods are supported?
 
-После этого сессия сохранится и повторная авторизация не потребуется.
+- `days`: last N × 24 hours;
+- `hours`: last N hours;
+- `today`: local midnight through now;
+- `last_messages`: latest N messages;
+- `unread`: messages after the known read boundary;
+- omitted: inherited context period or latest 300 messages.
 
-### Можно ли запустить бота на сервере?
+“Вчера” is currently parsed as the last 24 hours, not the previous calendar day.
 
-Да! Бот может работать на сервере 24/7.
+## Are media and service messages analyzed?
 
-**Рекомендации:**
-- Используйте `screen` или `tmux`
-- Настройте автозапуск через `systemd`
-- Регулярно проверяйте логи
-- Убедитесь, что `.env` защищен (`chmod 600`)
+No. `get_chat_history()` includes only messages with non-empty `message.text`.
+Media-only and service events are ignored.
 
-## Безопасность
+## Does reading history mark messages as read?
 
-### Безопасно ли хранить данные в `.env`?
+No. Read acknowledgement requires explicit wording such as “отметь как
+прочитанные”. A deterministic guard clears an LLM-invented `mark_as_read=true`.
 
-✅ Да, это стандартная практика:
-- Файл исключен из git
-- Установите права доступа: `chmod 600 .env`
-- Не делитесь файлом с другими
+Known edge case: LLM errors are returned as answer text rather than raised, so an
+explicit mark-as-read request can still acknowledge a chat after an analysis
+failure.
 
-### Может ли кто-то получить доступ к моему боту?
+## How does unread mode work?
 
-Нет. Бот работает только с пользователем, указанным в `ADMIN_USER_ID`. Даже если кто-то узнает токен бота, он не сможет его использовать.
+For a known zero unread count, the chat is skipped. Otherwise the bot uses the
+dialog unread count as a limit and `read_inbox_max_id` as the lower message-ID
+boundary when Telegram provides it.
 
-### Безопасно ли хранить сессию Telethon?
+If Telegram reports unread messages but they contain no text, an explicit
+mark-as-read request can acknowledge the chat without producing a summary.
 
-✅ Да:
-- Файл `.session` зашифрован
-- Исключен из git
-- Установите права доступа: `chmod 600 *.session`
+## What does context remember?
 
-### Куда отправляются данные из чатов?
+Only target type/name and period type/value. It does not retain message history,
+questions, or answers. It is global for the single admin and disappears on
+restart.
 
-Данные отправляются в:
-- OpenRouter-compatible API (модель задается через `/setmodel`)
+## How do model lists and fallback work?
 
-Данные используются только для обработки вашего запроса и не сохраняются.
+Comma-separated models form an ordered list. The bot exhausts all primary models
+for all retry rounds before entering fallback scope. Free models use configured
+pacing and growing 429 backoff.
 
-### Видит ли бот мои приватные чаты?
+Duplicate `(URL, model, token)` candidates are removed.
 
-Да, через Telethon бот имеет доступ ко всем вашим чатам от вашего имени. Это необходимо для работы функционала.
+## What does a one-request model override do?
 
-**Безопасность:**
-- Бот не сохраняет историю чатов
-- Данные используются только для ответа на ваш запрос
-- Код открыт, вы можете проверить что он делает
+Natural wording such as “используй модель X” sets `requested_model` for the
+analysis call only. The parser still uses configured models. The override is
+tried three times without configured fallback.
 
-## Производительность
+## Why did a model response get rejected?
 
-### Как ускорить обработку?
+The response validator rejects known HTML/code artifacts, unexpected scripts,
+excessive mixed-script corruption, boilerplate, and dates absent from selected
+history. The next candidate is then tried.
 
-1. Уменьшите объем данных:
-   ```
-   Суммаризируй чат Работа за сутки
-   # Вместо "за неделю"
-   ```
+## How does Yandex Cloud configuration differ?
 
-2. Используйте конкретные периоды:
-   ```
-   Суммаризируй последние 100 сообщений из чата Работа
-   # Вместо "за неделю"
-   ```
+Use a model URI containing the folder:
 
-3. Проверьте интернет-соединение
-
-### Сколько стоит использование?
-
-**OpenRouter API:**
-- Зависит от количества обрабатываемых сообщений
-- Для экономии используйте более дешевые модели
-- Для лучшего качества суммаризации используйте более сильные модели
-
-Стоимость зависит от объема данных и частоты запросов.
-
-## Troubleshooting
-
-### Как получить подробные логи?
-
-Все логи выводятся в консоль автоматически. Для отладки проверьте:
-- Сетевые запросы (📤 📥)
-- Ошибки API
-- Статус поиска чатов
-- Загрузку сообщений
-
-### Бот перестал отвечать
-
-1. Проверьте, запущен ли бот
-2. Проверьте логи на ошибки
-3. Попробуйте перезапустить: `./start.sh`
-4. Проверьте переменные в `.env` (бот пишет недостающие значения при запуске)
-
-### Как откатиться к предыдущей версии?
-
-```bash
-git log  # Найдите нужный коммит
-git checkout <commit-hash>
+```dotenv
+PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
+PRIMARY_LLM_API_KEY=...
 ```
 
-### Где хранятся настройки бота?
+The bot uses `Authorization: Api-Key` and `x-folder-id`. `/limits` is only for
+OpenRouter-style key endpoints and refuses Yandex Cloud.
 
-- Глобальные настройки: `config.py`
-- Пользовательские настройки: в памяти (сбрасываются при перезапуске)
-- Переменные окружения: `.env`
+## How are schedules stored and run?
 
-### Как обновить бота?
+Records are stored in `SCHEDULES_FILE` SQLite. APScheduler receives one-shot date
+jobs; after a successful run the bot computes and registers the next one.
+
+Supported recurrence:
+
+- daily;
+- weekly, anchored to creation weekday;
+- monthly, anchored to creation day and clamped in shorter months;
+- every N days.
+
+Uncaught job-level errors retry after 300 seconds. Per-chat errors in a folder
+are counted as skipped; the overall job still advances normally.
+
+## Why did an overdue schedule not run at startup?
+
+Startup recomputes stale `next_run` values. It does not replay missed executions.
+
+## Where is runtime state stored?
+
+Local defaults:
+
+- `.env`;
+- `telethon_session.session`;
+- `schedules.db`;
+- `bot.log`;
+- `llm_traffic.log`;
+- in-memory `current_context`.
+
+Docker redirects session, schedule, and log paths to `/data`.
+
+## Are Telethon sessions encrypted?
+
+Do not rely on that assumption. Treat the session file as active Telegram
+authentication material. Anyone who obtains usable session data may gain account
+access.
+
+## Are chat contents stored locally?
+
+Selected history is not stored in a dedicated history database, but full LLM
+request payloads and responses are written to `llm_traffic.log`. Schedules also
+store the original query. Both are sensitive.
+
+## Where are chat contents sent?
+
+To the endpoint and model shown by `/llmconfig`, including fallback candidates
+when used. Provider retention and privacy depend on that external service.
+
+## Why is a folder request slow?
+
+Dialogs are enumerated and folder chats are analyzed sequentially. Entire
+selected text history is sent in one LLM request per chat. Reduce the period or
+message count, or select one chat.
+
+## What does HTTP 429 handling do?
+
+The current candidate is skipped. Free models reserve a provider/scope pacing
+slot and apply configured backoff. Remaining models are attempted according to
+scope and retry order. Aggregate statistics show requests and 429 counts.
+
+## How do I inspect logs safely?
+
+- `bot.log`: lifecycle, Telegram operations, errors, model names, statistics.
+- `llm_traffic.log`: complete payloads and responses.
+
+Never attach raw `llm_traffic.log`, `.env`, or session files to a public issue.
+Redact chat content, URLs with secrets, IDs, and tokens first.
+
+## How do I update the bot?
 
 ```bash
 git pull
-pip install -U -r requirements.txt
+./setup.sh --dev
+venv/bin/python -m pytest
 ./start.sh
 ```
 
----
+Docker:
 
-**Не нашли ответ?** Создайте Issue в репозитории с описанием проблемы и логами.
+```bash
+docker compose up -d --build
+```
+
+The production host currently uses `docker-compose`.
+
+## How do I report a problem?
+
+Repository: [kab7/llmbot](https://github.com/kab7/llmbot).
+
+Include sanitized reproduction steps, expected/actual behavior, Python version,
+deployment mode, and safe excerpts from `bot.log`. Do not include credentials,
+session data, schedule databases, or raw LLM traffic.

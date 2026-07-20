@@ -1,25 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-echo "🤖 Запуск Telegram Chat Analyzer Bot..."
-echo ""
+set -euo pipefail
 
-# Проверяем наличие виртуального окружения
-if [ ! -d "venv" ]; then
-    echo "⚠️  Виртуальное окружение не найдено."
-    echo "Создайте его командой: python3 -m venv venv"
-    echo "Затем активируйте: source venv/bin/activate"
-    echo "И установите зависимости: pip install -r requirements.txt"
-    echo ""
-    read -p "Хотите создать виртуальное окружение сейчас? (y/n) " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        python3 -m venv venv
-        venv/bin/pip install -r requirements.txt
-    else
-        exit 1
-    fi
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+VENV_DIR="${VENV_DIR:-venv}"
+PYTHON="$VENV_DIR/bin/python"
+
+if [[ ! -x "$PYTHON" ]] ||
+    ! "$PYTHON" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] <= (3, 13) else 1)' >/dev/null 2>&1 ||
+    ! "$PYTHON" -c 'import apscheduler, dotenv, requests, telegram, telethon' >/dev/null 2>&1; then
+    echo "Virtual environment is missing, broken, incompatible, or incomplete."
+    echo "Repair it with: ./setup.sh"
+    exit 1
 fi
 
-echo ""
-echo "🚀 Запуск бота..."
-venv/bin/python bot.py
+exec "$PYTHON" bot.py
