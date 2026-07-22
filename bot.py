@@ -307,6 +307,9 @@ RU_MONTHS_GENITIVE = [
     "ноября",
     "декабря",
 ]
+NUMERIC_DATE_PATTERN = re.compile(
+    r"(?<!\d)(20\d{2})[-/](\d{2})[-/](\d{2})(?!\d)"
+)
 
 
 def escape_markdown(text: str) -> str:
@@ -679,18 +682,29 @@ def _has_pending_free_attempts(
     )
 
 
-def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
-    allowed: set[str] = set()
-    for raw_date in re.findall(r"\b(20\d{2})-(\d{2})-(\d{2})\b", chat_history or ""):
+def _extract_numeric_dates(text: str) -> set[str]:
+    dates: set[str] = set()
+    for raw_date in NUMERIC_DATE_PATTERN.findall(text or ""):
         year_str, month_str, day_str = raw_date
         try:
             year = int(year_str)
             month = int(month_str)
             day = int(day_str)
+            datetime(year, month, day)
         except ValueError:
             continue
-        if 1 <= month <= 12 and 1 <= day <= 31:
-            allowed.add(f"{day} {RU_MONTHS_GENITIVE[month - 1]} {year}")
+        dates.add(f"{year:04d}-{month:02d}-{day:02d}")
+    return dates
+
+
+def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
+    allowed: set[str] = set()
+    for iso_date in _extract_numeric_dates(chat_history):
+        year_str, month_str, day_str = iso_date.split("-")
+        year = int(year_str)
+        month = int(month_str)
+        day = int(day_str)
+        allowed.add(f"{day} {RU_MONTHS_GENITIVE[month - 1]} {year}")
     return allowed
 
 
@@ -738,8 +752,8 @@ def _analyze_summary_quality(
         issues.append("обнаружены служебные шаблоны вместо чистого саммари")
         score += len(boilerplate_hits)
 
-    summary_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", text))
-    history_iso_dates = set(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", chat_history or ""))
+    summary_iso_dates = _extract_numeric_dates(text)
+    history_iso_dates = _extract_numeric_dates(chat_history)
     extra_iso_dates = summary_iso_dates - history_iso_dates
     if extra_iso_dates:
         issues.append("обнаружены даты, отсутствующие в исходной истории")

@@ -36,6 +36,8 @@ behavior is defined by code and tests.
 
 ### Changed
 
+- Date validation now normalizes `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/`
+  source-URL paths, preventing grounded verbalized dates from being rejected.
 - Rebuilt all documentation from current code behavior, including folders,
   unread boundaries, explicit mark-as-read, schedules, one-request model
   overrides, provider differences, persistence, and privacy.

@@ -149,6 +149,10 @@ history. The next candidate is then tried. Provider
 `finish_reason=content_filter`/`safety` is recorded directly as a provider
 rejection rather than being mislabeled as a citation failure.
 
+Dates embedded in original URLs as `/YYYY/MM/DD/` count as source evidence just
+like `YYYY-MM-DD` Telegram history timestamps. A Russian date verbalized from
+such a URL is therefore accepted.
+
 ## How does Yandex Cloud configuration differ?
 
 Use a model URI containing the folder:

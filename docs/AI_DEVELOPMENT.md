@@ -285,7 +285,10 @@ supported for Yandex Cloud.
 
 The processor prompt requires Russian, grounded output. A response validator
 rejects suspicious HTML/code artifacts, unexpected scripts, excessive mixed
-scripts, boilerplate, and dates not supported by the supplied history. Combined
+scripts, boilerplate, and dates not supported by the supplied history. Numeric
+dates in both `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/` URL paths are
+normalized to the same calendar date, so a model may safely verbalize a date
+that is present in an original source URL. Combined
 folder calls additionally reject missing or invented source links as described
 above and append one citation-repair turn after the first such rejection.
 `_cleanup_summary_text()` then removes known presentation artifacts.
@@ -411,10 +414,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-07-22 with Python 3.12.13:
+Last verified on 2026-07-23 with Python 3.12.13:
 
-- 139 tests passed;
-- total configured coverage: 75.92%;
+- 140 tests passed;
+- total configured coverage: 76.02%;
 - `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

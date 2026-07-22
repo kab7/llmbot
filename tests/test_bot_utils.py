@@ -364,6 +364,19 @@ def test_analyze_summary_quality_detects_artifacts_and_dates():
     assert issues
 
 
+def test_analyze_summary_quality_accepts_date_from_source_url():
+    history = (
+        "[2026-07-23 00:05:00] News: материал "
+        "https://example.test/news/2026/07/22/story"
+    )
+    summary = "Главные события за 22 июля 2026 года."
+
+    score, issues = bot._analyze_summary_quality(summary, history)
+
+    assert score == 0
+    assert issues == []
+
+
 def test_analyze_summary_quality_detects_boilerplate():
     history = "[2026-03-10 13:08:44] User: пример"
     bad_summary = (
