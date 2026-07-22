@@ -184,6 +184,8 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
    - если пользователь явно просит использовать конкретную модель
      ("с помощью anthropic/claude-opus-4.6", "используй модель ...", "using model ..."),
      верни точный идентификатор модели строкой;
+   - для явных алиасов "через deepseek", "через дипсик", "используй DeepSeek"
+     верни строку "deepseek";
    - иначе null.
 
 Период:
@@ -245,6 +247,10 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 Пользователь: "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
 Ответ:
 {"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6","requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}
+
+Пользователь: "сделай одну общую сводку папки news за сегодня через дипсик"
+Ответ:
+{"target_type":"folder","target_name":"news","folder_mode":"combined","period_type":"today","period_value":null,"mark_as_read":false,"query":"сделай одну общую сводку папки news за сегодня через дипсик","requested_model":"deepseek","recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "каждое утро в 10:00 сделай одну сводку топ-10 новостей по каналам из папки news за вчера"
 Ответ:

@@ -7,6 +7,13 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Explicit `deepseek`/`дипсик` request alias that selects only configured
+  DeepSeek candidates while preserving their provider routes and fallback order.
+- Provider safety-filter classification from `finish_reason`, before citation
+  validation and repair logic.
+- Semantic splitting for long summaries: whole numbered news items, bullets,
+  headings, or paragraphs are kept together across Telegram messages whenever
+  an individual item fits.
 - Dedicated `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` setting (default 90 seconds)
   for large merged folder requests.
 - One-turn citation repair after a combined answer omits exact source links or

@@ -156,11 +156,21 @@ request. If the first otherwise valid answer omits exact source permalinks or
 invents Telegram URLs, the next model attempt receives the rejected answer plus
 a focused citation-repair instruction.
 
+When an analysis result exceeds one Telegram message, the bot packs whole news
+items or paragraphs into successive messages instead of cutting at an arbitrary
+character position. Only a single item that is itself too long is hard-split.
+
 One-request model override:
 
 ```text
 Суммаризируй папку AI с помощью anthropic/claude-opus-4.6
+Сделай одну общую сводку папки news за сегодня через дипсик
 ```
+
+`через дипсик` (also `через deepseek` or `используй DeepSeek`) skips
+non-DeepSeek candidates and uses the configured DeepSeek routes in their normal
+primary/fallback order. This keeps the correct provider URL and credentials for
+each configured DeepSeek model.
 
 Schedule:
 

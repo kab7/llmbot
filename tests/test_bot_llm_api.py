@@ -392,6 +392,89 @@ def test_call_llm_api_response_validator_tries_next_model_without_sleep(monkeypa
     assert sleeps == []
 
 
+def test_call_llm_api_content_filter_tries_next_model_without_citation_repair(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://primary.example/v1",
+            "primary-token-1234",
+            "provider/alice,provider/deepseek",
+        ),
+    )
+    seen_models = []
+    validated_contents = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen_models.append(json["model"])
+        if json["model"] == "provider/alice":
+            return DummyResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Не могу обсуждать эту тему"},
+                            "finish_reason": "content_filter",
+                        }
+                    ]
+                },
+            )
+        return DummyResponse(
+            200,
+            {
+                "choices": [
+                    {"message": {"content": "Саммари со ссылкой"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    def validator(content, candidate):
+        validated_contents.append(content)
+        return None
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    result = bot.call_llm_api_with_meta(
+        [{"role": "user", "content": "hi"}], response_validator=validator
+    )
+
+    assert result["content"] == "Саммари со ссылкой"
+    assert seen_models == ["provider/alice", "provider/deepseek"]
+    assert validated_contents == ["Саммари со ссылкой"]
+    assert result["stats"]["provider/alice"]["rejected"] == 1
+
+
+def test_build_requested_model_candidates_deepseek_alias_uses_configured_routes(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        bot,
+        "llm_runtime",
+        LLMRuntimeConfig(
+            "https://ai.api.cloud.yandex.net/v1",
+            "yandex-token",
+            (
+                "gpt://folder/aliceai-llm/latest,"
+                "gpt://folder/deepseek-v32/latest"
+            ),
+            fallback_url="https://openrouter.ai/api/v1",
+            fallback_token="openrouter-token",
+            fallback_model="deepseek/deepseek-v3.2",
+        ),
+    )
+
+    candidates = bot._build_requested_model_candidates("дипсик")
+
+    assert [candidate.model for candidate in candidates] == [
+        "gpt://folder/deepseek-v32/latest",
+        "deepseek/deepseek-v3.2",
+    ]
+    assert [candidate.scope for candidate in candidates] == ["primary", "fallback"]
+    assert candidates[0].url == "https://ai.api.cloud.yandex.net/v1/chat/completions"
+    assert candidates[1].url == "https://openrouter.ai/api/v1/chat/completions"
+
+
 def test_call_llm_api_validation_and_failures(monkeypatch):
     _set_runtime_token(monkeypatch, token="")
     try:
@@ -1327,11 +1410,21 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
                 request_timeout_seconds,
             )
         )
+        long_answer = "\n\n".join(
+            [
+                (
+                    "1. Общая новость — [оригинал](https://t.me/source_a/11)\n"
+                    + "A" * 1600
+                ),
+                (
+                    "2. Подтверждение — [оригинал](https://t.me/source_b/22)\n"
+                    + "B" * 1600
+                ),
+                "3. Еще одна новость\n" + "C" * 1600,
+            ]
+        )
         return {
-            "answer": (
-                "1. Общая новость — [оригинал](https://t.me/source_a/11), "
-                "[подтверждение](https://t.me/source_b/22)"
-            ),
+            "answer": long_answer,
             "stats": {},
         }
 
@@ -1391,8 +1484,13 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
     assert period_text.startswith("непрочитанные сообщения")
     assert all(item[3] is True for item in calls["histories"])
     assert calls["marked"] == ["source_a", "source_b"]
-    assert len(update.message.sent) == 1
-    assert "https://t.me/source_a/11" in update.message.sent[0][0]
+    assert len(update.message.sent) == 3
+    sent_texts = [text for text, _ in update.message.sent]
+    assert "https://t.me/source_a/11" in sent_texts[1]
+    assert "https://t.me/source_b/22" in sent_texts[1]
+    for title in ("1. Общая новость", "2. Подтверждение", "3. Еще одна новость"):
+        assert sum(title in text for text in sent_texts) == 1
+    assert "3. Еще одна новость" in sent_texts[2]
 
 
 def test_process_combined_folder_does_not_mark_read_after_llm_failure(monkeypatch):

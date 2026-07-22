@@ -832,7 +832,8 @@ def _build_analysis_query(query: Optional[str]) -> str:
         cleaned,
     )
     cleaned = re.sub(
-        r"(?i)(?:,?\s*(?:и\s+)?)?(?:с\s+помощью|используй(?:\s+модель)?|using\s+model)\s+"
+        r"(?i)(?:,?\s*(?:и\s+)?)?(?:через(?:\s+модель)?|с\s+помощью|"
+        r"используй(?:\s+модель)?|using\s+model)\s+"
         r"[\w./:-]+",
         "",
         cleaned,
@@ -843,10 +844,52 @@ def _build_analysis_query(query: Optional[str]) -> str:
     return "Сделай краткое саммари переписки по делу."
 
 
+DEEPSEEK_REQUEST_PATTERN = re.compile(
+    r"(?i)\b(?:через|с\s+помощью|используй(?:\s+модель)?)\s+"
+    r"(?:модель\s+)?(?:deepseek|дипсик\w*)\b"
+)
+EXPLICIT_DEEPSEEK_MODEL_PATTERN = re.compile(
+    r"(?i)\bdeepseek/[\w./:-]+"
+)
+DEEPSEEK_MODEL_ALIASES = {
+    "deepseek",
+    "дипсик",
+    "дипсика",
+    "дипсиком",
+}
+
+
+def _resolve_requested_model_override(
+    user_message: str, parsed_model: Optional[str]
+) -> Optional[str]:
+    """Resolve deterministic natural-language aliases for one-request models."""
+    text = user_message or ""
+    if not DEEPSEEK_REQUEST_PATTERN.search(text):
+        return parsed_model
+
+    explicit_match = EXPLICIT_DEEPSEEK_MODEL_PATTERN.search(text)
+    if explicit_match:
+        return explicit_match.group(0)
+    return "deepseek"
+
+
 def _build_requested_model_candidates(model_name: str) -> list[LLMSettings]:
     normalized_model = (model_name or "").strip()
     if not normalized_model:
         raise ValueError("Название модели не указано")
+
+    if normalized_model.casefold() in DEEPSEEK_MODEL_ALIASES:
+        candidates = [
+            candidate
+            for candidate in llm_runtime.get_candidate_settings()
+            if "deepseek" in candidate.model.casefold() and candidate.token
+        ]
+        if not candidates:
+            raise ValueError(
+                "В конфигурации нет доступной DeepSeek-модели с токеном"
+            )
+        return candidates
+
     primary = llm_runtime.get_settings()
     fallback = llm_runtime.get_fallback_settings()
     base = primary if primary.token else fallback
@@ -993,6 +1036,67 @@ def _split_text_chunks(text: str, max_length: int = 3900) -> list[str]:
         end = min(start + max_length, len(text))
         chunks.append(text[start:end])
         start = end
+    return chunks
+
+
+SUMMARY_NUMBERED_ITEM_PATTERN = re.compile(
+    r"(?m)^(?:\*\*)?\d{1,3}[.)](?:\*\*)?\s+"
+)
+SUMMARY_HEADING_PATTERN = re.compile(r"(?m)^#{1,6}\s+")
+SUMMARY_BULLET_PATTERN = re.compile(r"(?m)^[-*•]\s+")
+
+
+def _split_summary_chunks(text: str, max_length: int = 3500) -> list[str]:
+    """Pack whole summary items into Telegram-sized chunks when possible."""
+    if len(text) <= max_length:
+        return [text]
+
+    matches = []
+    for pattern in (
+        SUMMARY_NUMBERED_ITEM_PATTERN,
+        SUMMARY_HEADING_PATTERN,
+        SUMMARY_BULLET_PATTERN,
+    ):
+        candidate_matches = list(pattern.finditer(text))
+        if len(candidate_matches) >= 2:
+            matches = candidate_matches
+            break
+    blocks: list[str] = []
+    if matches:
+        if matches[0].start() > 0:
+            prefix = text[: matches[0].start()].strip()
+            if prefix:
+                blocks.append(prefix)
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            block = text[match.start() : end].strip()
+            if block:
+                blocks.append(block)
+    else:
+        blocks = [block.strip() for block in re.split(r"\n{2,}", text) if block.strip()]
+
+    if len(blocks) <= 1:
+        return _split_text_chunks(text, max_length)
+
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= max_length:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+            current = ""
+
+        if len(block) <= max_length:
+            current = block
+        else:
+            chunks.extend(_split_text_chunks(block, max_length))
+
+    if current:
+        chunks.append(current)
     return chunks
 
 
@@ -1294,7 +1398,8 @@ def _call_llm_api_internal(
 
                     content = None
                     if "choices" in result:
-                        content = result["choices"][0]["message"]["content"]
+                        choice = result["choices"][0]
+                        content = choice["message"]["content"]
                     else:
                         model_stats["errors"] += 1
                         last_error = Exception("API вернул неожиданный формат ответа")
@@ -1305,6 +1410,27 @@ def _call_llm_api_internal(
                         if candidate_idx < len(scope_candidates):
                             logger.warning(
                                 "↪️ После неожиданного формата от '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    finish_reason = str(choice.get("finish_reason") or "").casefold()
+                    if finish_reason in {"content_filter", "safety"}:
+                        model_stats["rejected"] += 1
+                        rejection_reason = (
+                            f"провайдер остановил ответ фильтром безопасности "
+                            f"(finish_reason={finish_reason})"
+                        )
+                        last_error = Exception(rejection_reason)
+                        logger.warning(
+                            "⚠️ Ответ модели '%s' отклонен провайдером: %s",
+                            candidate.model,
+                            rejection_reason,
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После отказа '%s' пробую следующую модель '%s'",
                                 candidate.model,
                                 scope_candidates[candidate_idx].model,
                             )
@@ -3901,7 +4027,7 @@ async def _process_combined_folder(
         await _reply_text_html_or_plain(update.message, full_message)
     else:
         await _reply_text_html_or_plain(update.message, result_prefix)
-        for chunk in _split_text_chunks(result, 3500):
+        for chunk in _split_summary_chunks(result, 3500):
             await _reply_text_html_or_plain(
                 update.message, _render_markdownish_to_telegram_html(chunk)
             )
@@ -4035,7 +4161,7 @@ async def _process_single_chat(
         await _reply_text_html_or_plain(update.message, full_message)
     else:
         await _reply_text_html_or_plain(update.message, result_prefix)
-        for chunk in _split_text_chunks(result, 3500):
+        for chunk in _split_summary_chunks(result, 3500):
             await _reply_text_html_or_plain(
                 update.message, _render_markdownish_to_telegram_html(chunk)
             )
@@ -4111,7 +4237,9 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
             "mark_as_read", False
         )  # Отмечать ли сообщения прочитанными
         query = command.get("query") or user_message
-        requested_model = command.get("requested_model")
+        requested_model = _resolve_requested_model_override(
+            user_message, command.get("requested_model")
+        )
         recurrence_type = command.get("recurrence_type")
         interval_days = command.get("interval_days")
         schedule_time = command.get("time")

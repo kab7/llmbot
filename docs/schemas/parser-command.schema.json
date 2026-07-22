@@ -45,7 +45,8 @@
       "type": ["string", "null"]
     },
     "requested_model": {
-      "type": ["string", "null"]
+      "type": ["string", "null"],
+      "description": "Exact one-request model identifier or the deepseek alias resolved against configured DeepSeek candidates."
     },
     "recurrence_type": {
       "type": ["string", "null"],

@@ -252,16 +252,27 @@ admin.
 When `requested_model` is present:
 
 - it is used only for the analysis call, not the parser call;
+- `_resolve_requested_model_override()` deterministically recognizes explicit
+  `через дипсик`, `через deepseek`, and `используй DeepSeek` wording even when
+  the LLM parser omits or mistranslates it;
+- the `deepseek`/Russian alias selects every configured candidate whose model
+  name contains `deepseek`, preserving each candidate's endpoint, token, scope,
+  and primary-before-fallback order while excluding Alice and other models;
 - the primary endpoint/token is preferred, or fallback credentials are used when
-  primary has no token;
-- only that model is attempted;
-- it gets three attempts;
-- configured model fallback is intentionally disabled.
+  primary has no token for an explicit non-alias model identifier;
+- an explicit non-alias model identifier is the only candidate and configured
+  fallback is disabled;
+- each selected scope gets up to three retry rounds.
 
 ### Provider differences
 
 All providers must expose an OpenAI-style chat-completions response with
 `choices[0].message.content`.
+
+`finish_reason=content_filter` or `finish_reason=safety` is classified as a
+provider rejection before the response validator runs. This prevents a safety
+refusal from being mislabeled as a missing citation and prevents citation-repair
+turns from being appended to the next model's request.
 
 For `ai.api.cloud.yandex.net`, `_build_llm_headers()` uses
 `Authorization: Api-Key` and derives `x-folder-id` from a model URI shaped like
@@ -341,7 +352,13 @@ tests together. Add an explicit migration for existing databases.
 LLM markdown-like output is converted to Telegram-supported HTML. Supported
 transformations are headings, bold, inline code, and HTTP(S) links. If Telegram
 rejects HTML, the bot retries with plain text. Long messages are split below
-Telegram's 4096-character limit.
+Telegram's 4096-character limit. Analysis results use
+`_split_summary_chunks()`: top-level numbered items, bullets, and headings are
+treated as indivisible semantic blocks and packed into messages up to 3500
+characters. Unnumbered results fall back to paragraph blocks. Raw fixed-length
+splitting is used only when one semantic block is itself too large for a
+message. Non-summary administrative output continues to use
+`_split_text_chunks()`.
 
 Mark-as-read happens only when `_process_chat_with_openai_result()` returns
 `ok=True`, except for the documented unread/text-empty case. The helper converts
@@ -396,9 +413,9 @@ all four runtime modules: `bot`, `config`, `llm_runtime`, and
 
 Last verified on 2026-07-22 with Python 3.12.13:
 
-- 133 tests passed;
-- total configured coverage: 75.08%;
-- `bot.py`: 72%;
+- 139 tests passed;
+- total configured coverage: 75.92%;
+- `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;
 - `schedule_runtime.py`: 100%.

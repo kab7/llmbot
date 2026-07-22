@@ -136,11 +136,18 @@ Natural wording such as “используй модель X” sets `requested_
 analysis call only. The parser still uses configured models. The override is
 tried three times without configured fallback.
 
+For a DeepSeek-only request, use `через дипсик`, `через deepseek`, or
+`используй DeepSeek`. The bot skips Alice and tries only configured DeepSeek
+candidates, keeping their own Yandex/OpenRouter endpoints and normal
+primary/fallback order.
+
 ## Why did a model response get rejected?
 
 The response validator rejects known HTML/code artifacts, unexpected scripts,
 excessive mixed-script corruption, boilerplate, and dates absent from selected
-history. The next candidate is then tried.
+history. The next candidate is then tried. Provider
+`finish_reason=content_filter`/`safety` is recorded directly as a provider
+rejection rather than being mislabeled as a citation failure.
 
 ## How does Yandex Cloud configuration differ?
 
@@ -228,6 +235,13 @@ counted as technical errors.
 The current candidate is skipped. Free models reserve a provider/scope pacing
 slot and apply configured backoff. Remaining models are attempted according to
 scope and retry order. Aggregate statistics show requests and 429 counts.
+
+## How are long summaries split into Telegram messages?
+
+The bot keeps top-level numbered news items, bullets, headings, or unnumbered
+paragraphs whole and packs them into messages below Telegram's size limit. It
+falls back to fixed-length splitting only when a single news item is itself too
+large to fit in one message.
 
 ## How do I inspect logs safely?
 

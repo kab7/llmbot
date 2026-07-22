@@ -304,6 +304,36 @@ def test_split_markdown_chunks_keeps_escape_integrity():
         assert not chunk.endswith("\\")
 
 
+def test_split_summary_chunks_keeps_numbered_news_items_intact():
+    items = [
+        f"{index}. Новость {index}\n- Источник {index}\n" + chr(96 + index) * 55
+        for index in range(1, 4)
+    ]
+    text = "\n\n".join(items)
+
+    chunks = bot._split_summary_chunks(text, max_length=100)
+
+    assert chunks == items
+    assert all(len(chunk) <= 100 for chunk in chunks)
+
+
+def test_split_summary_chunks_uses_paragraphs_for_unnumbered_summary():
+    paragraphs = ["Первая новость " + "a" * 60, "Вторая новость " + "b" * 60]
+
+    chunks = bot._split_summary_chunks("\n\n".join(paragraphs), max_length=100)
+
+    assert chunks == paragraphs
+
+
+def test_split_summary_chunks_hard_splits_only_oversized_single_item():
+    item = "1. Очень длинная новость\n" + "x" * 210
+
+    chunks = bot._split_summary_chunks(item, max_length=100)
+
+    assert "".join(chunks) == item
+    assert all(len(chunk) <= 100 for chunk in chunks)
+
+
 def test_render_markdownish_to_telegram_html_converts_common_patterns():
     src = "## Заголовок\n**жирный** и `код`\n[Ссылка](https://example.com)"
     out = bot._render_markdownish_to_telegram_html(src)
@@ -464,6 +494,38 @@ def test_build_analysis_query_strips_requested_model_clause():
     assert "claude-opus-4.6" not in cleaned
     assert "с помощью" not in cleaned.lower()
     assert cleaned == "суммаризируй папку AI"
+
+    alias_cleaned = bot._build_analysis_query(
+        "сделай общую сводку папки news за сегодня через дипсик"
+    )
+    assert alias_cleaned == "сделай общую сводку папки news за сегодня"
+
+
+def test_resolve_requested_model_override_recognizes_deepseek_alias():
+    assert (
+        bot._resolve_requested_model_override(
+            "Сделай сводку папки news через дипсик", None
+        )
+        == "deepseek"
+    )
+    assert (
+        bot._resolve_requested_model_override(
+            "Используй модель DeepSeek для папки news", None
+        )
+        == "deepseek"
+    )
+    assert (
+        bot._resolve_requested_model_override(
+            "Сделай сводку через deepseek/deepseek-v3.2", None
+        )
+        == "deepseek/deepseek-v3.2"
+    )
+    assert (
+        bot._resolve_requested_model_override(
+            "Сделай сводку папки news", "configured/model"
+        )
+        == "configured/model"
+    )
 
 
 def test_compact_query_for_display():

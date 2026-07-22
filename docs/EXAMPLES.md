@@ -181,11 +181,14 @@ when evidence is missing.
 ```text
 Суммаризируй папку AI с помощью anthropic/claude-opus-4.6
 Используй модель openai/gpt-4.1 для анализа чата Release за сутки
+Сделай одну общую сводку папки news за сегодня через дипсик
 ```
 
 The override affects only the analysis call. Parsing still uses configured
 candidates. The requested model gets three attempts and does not fall back to
-the configured model lists.
+the configured model lists. The `deepseek`/`дипсик` alias is different: it
+selects all configured DeepSeek candidates and preserves their normal
+primary/fallback provider order while excluding non-DeepSeek models.
 
 ## Periodic schedules
 
