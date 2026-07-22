@@ -210,9 +210,18 @@ when used. Provider retention and privacy depend on that external service.
 
 Dialogs and histories are enumerated sequentially. In `per_chat` mode each
 selected text history is sent in one LLM request. In `combined` mode all selected
-history text is merged into one potentially large request. There is no
-token-aware chunking, so reduce the period or folder size when provider context
-limits are reached.
+history text is merged into one potentially large request. Combined analysis
+uses `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (90 seconds by default), while
+ordinary calls use `LLM_REQUEST_TIMEOUT_SECONDS` (20 seconds by default). There
+is no token-aware chunking, so reduce the period or folder size when provider
+context limits are reached.
+
+If an otherwise valid combined answer has no exact original-post link or
+contains an invented Telegram link, it is rejected. The next candidate or retry
+receives that answer plus a citation-repair instruction, so it can correct the
+links instead of repeating the same response. Candidate statistics count the
+first response as `rejected`; provider timeouts and transport failures are
+counted as technical errors.
 
 ## What does HTTP 429 handling do?
 

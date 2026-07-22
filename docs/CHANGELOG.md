@@ -7,6 +7,11 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Dedicated `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` setting (default 90 seconds)
+  for large merged folder requests.
+- One-turn citation repair after a combined answer omits exact source links or
+  invents Telegram URLs; subsequent candidates receive the rejected answer and
+  correction instruction.
 - Final-record credential redaction for configured secrets, Telegram/OpenRouter
   tokens, Authorization values, query credentials, and traceback text.
 - `scripts/scrub_logs.py` for safe in-place cleanup of historical text logs.

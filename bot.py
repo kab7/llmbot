@@ -1033,6 +1033,7 @@ def _call_llm_api_internal(
     rate_limit_callback: Optional[Any] = None,
     response_validator: Optional[Any] = None,
     max_attempts_override: Optional[int] = None,
+    request_timeout_seconds_override: Optional[int] = None,
 ) -> Dict[str, str]:
     """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
     try:
@@ -1084,6 +1085,13 @@ def _call_llm_api_internal(
             logger.debug(f"  Messages count: {len(messages)}")
 
         max_attempts = max(1, int(max_attempts_override or config.LLM_MAX_RETRIES))
+        request_timeout_seconds = max(
+            1,
+            int(
+                request_timeout_seconds_override
+                or config.LLM_REQUEST_TIMEOUT_SECONDS
+            ),
+        )
         last_error = None
         last_status_code = None
         last_error_details = ""
@@ -1155,7 +1163,7 @@ def _call_llm_api_internal(
                             candidate.url,
                             json=payload,
                             headers=headers,
-                            timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+                            timeout=request_timeout_seconds,
                         )
                     except requests.exceptions.RequestException as e:
                         model_stats["errors"] += 1
@@ -1386,7 +1394,7 @@ def _call_llm_api_internal(
             )
         if isinstance(last_error, requests.exceptions.Timeout):
             raise Exception(
-                f"Timeout LLM API ({config.LLM_REQUEST_TIMEOUT_SECONDS}s): {last_error}"
+                f"Timeout LLM API ({request_timeout_seconds}s): {last_error}"
             )
         if last_error:
             raise Exception(str(last_error))
@@ -1419,6 +1427,7 @@ def call_llm_api_with_meta(
     rate_limit_callback: Optional[Any] = None,
     response_validator: Optional[Any] = None,
     max_attempts_override: Optional[int] = None,
+    request_timeout_seconds_override: Optional[int] = None,
 ) -> Dict[str, str]:
     """Вызов LLM API и возврат текста вместе с моделью/URL."""
     return _call_llm_api_internal(
@@ -1427,6 +1436,7 @@ def call_llm_api_with_meta(
         rate_limit_callback,
         response_validator,
         max_attempts_override,
+        request_timeout_seconds_override,
     )
 
 
@@ -2954,6 +2964,7 @@ async def _process_chat_with_openai_result(
     rate_limit_notifier: Optional[Any] = None,
     requested_model: Optional[str] = None,
     required_source_urls: Optional[set[str]] = None,
+    request_timeout_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Обрабатывает историю чата согласно запросу пользователя
@@ -2984,6 +2995,29 @@ async def _process_chat_with_openai_result(
             },
         ]
 
+        citation_repair_added = False
+
+        def request_citation_repair(content: str, reason: str) -> None:
+            nonlocal citation_repair_added
+            if citation_repair_added:
+                return
+            messages.extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Предыдущий ответ отклонён: {reason}. Перепиши итоговый "
+                            "ответ и для каждого пункта добавь точные markdown-ссылки "
+                            "на релевантные исходные посты. Копируй URL только из "
+                            "маркеров [Оригинал](URL) в переданной истории. Не "
+                            "выдумывай и не изменяй URL. Верни только исправленный итог."
+                        ),
+                    },
+                ]
+            )
+            citation_repair_added = True
+
         def summary_validator(content: str, candidate) -> Optional[str]:
             score, issues = _analyze_summary_quality(content, chat_history)
             if score > 0:
@@ -2992,7 +3026,9 @@ async def _process_chat_with_openai_result(
             if required_source_urls:
                 response_urls = set(URL_PATTERN.findall(content or ""))
                 if not response_urls.intersection(required_source_urls):
-                    return "нет точной ссылки на исходный пост"
+                    reason = "нет точной ссылки на исходный пост"
+                    request_citation_repair(content, reason)
+                    return reason
                 invented_telegram_urls = {
                     url
                     for url in response_urls
@@ -3000,7 +3036,9 @@ async def _process_chat_with_openai_result(
                     and url not in required_source_urls
                 }
                 if invented_telegram_urls:
-                    return "ответ содержит ссылку Telegram, которой нет в истории"
+                    reason = "ответ содержит ссылку Telegram, которой нет в истории"
+                    request_citation_repair(content, reason)
+                    return reason
             return None
 
         candidates_override = None
@@ -3009,14 +3047,16 @@ async def _process_chat_with_openai_result(
             candidates_override = _build_requested_model_candidates(requested_model)
             max_attempts_override = 3
 
-        llm_result = await asyncio.to_thread(
-            call_llm_api_with_meta,
+        llm_call_args = [
             messages,
             candidates_override,
             None,
             summary_validator,
             max_attempts_override,
-        )
+        ]
+        if request_timeout_seconds is not None:
+            llm_call_args.append(request_timeout_seconds)
+        llm_result = await asyncio.to_thread(call_llm_api_with_meta, *llm_call_args)
         answer = llm_result.get("content", "")
         used_model = llm_result.get("model", "")
         llm_stats = llm_result.get("stats") or {}
@@ -3843,6 +3883,7 @@ async def _process_combined_folder(
         f"{period_text}; источников: {len(processed_sources)}",
         requested_model=requested_model,
         required_source_urls=source_urls or None,
+        request_timeout_seconds=config.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS,
     )
     result = llm_result.get("answer", "")
     analysis_ok = bool(llm_result.get("ok", True))

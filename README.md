@@ -150,7 +150,11 @@ are merged with source boundaries, then one LLM request produces one result.
 Combined results cite the original posts. Public channels use
 `t.me/<username>/<message_id>` and private channels/supergroups use
 `t.me/c/...`; Telegram cannot generate a permalink for a legacy private
-`Chat`.
+`Chat`. A combined LLM request uses `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS`
+(90 seconds by default) because its payload can be much larger than a per-chat
+request. If the first otherwise valid answer omits exact source permalinks or
+invents Telegram URLs, the next model attempt receives the rejected answer plus
+a focused citation-repair instruction.
 
 One-request model override:
 

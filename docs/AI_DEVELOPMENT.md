@@ -175,7 +175,17 @@ Folder history loading is sequential. There are two processing modes:
 message line includes its original permalink. The processor is instructed to
 cite relevant links and deduplicate repeated events. Its response validator
 requires at least one URL copied from the history when linkable URLs exist and
-rejects Telegram URLs absent from the history.
+rejects Telegram URLs absent from the history. On the first citation-only
+rejection, the mutable request conversation is extended with the rejected
+assistant answer and a focused instruction to copy exact URLs from the
+`Оригинал` markers. Later candidates and retry rounds therefore repair the
+answer instead of receiving an identical prompt. Only one repair turn is
+appended.
+
+Combined folder analysis passes
+`COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) to the HTTP layer. The
+effective value cannot be lower than `LLM_REQUEST_TIMEOUT_SECONDS`. All other
+parser and analysis calls keep the ordinary timeout (default `20`).
 
 ### Period selection
 
@@ -229,6 +239,10 @@ validator rejection move to the next candidate. A `429` also moves to the next
 candidate. Free models have separate primary/fallback pacing and growing 429
 backoff, configured by the `*_FREE_MODEL_*` variables.
 
+`_call_llm_api_internal()` accepts a per-call timeout override. It is used by
+combined folder analysis so large merged payloads do not inherit the shorter
+ordinary-request timeout.
+
 Candidate stats count requests, 429s, successes, validator rejections, and other
 technical errors. They are aggregated across a folder operation and shown to the
 admin.
@@ -262,7 +276,7 @@ The processor prompt requires Russian, grounded output. A response validator
 rejects suspicious HTML/code artifacts, unexpected scripts, excessive mixed
 scripts, boilerplate, and dates not supported by the supplied history. Combined
 folder calls additionally reject missing or invented source links as described
-above.
+above and append one citation-repair turn after the first such rejection.
 `_cleanup_summary_text()` then removes known presentation artifacts.
 
 The complete payload and response are logged to `llm_traffic.log`. Every
@@ -380,10 +394,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-07-20 with Python 3.12.13:
+Last verified on 2026-07-22 with Python 3.12.13:
 
-- 131 tests passed;
-- total configured coverage: 75.05%;
+- 133 tests passed;
+- total configured coverage: 75.08%;
 - `bot.py`: 72%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

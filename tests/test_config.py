@@ -20,6 +20,7 @@ def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("FALLBACK_LLM_MODEL", "openrouter/free")
     monkeypatch.setenv("FALLBACK_LLM_TOKEN", "fallback-token")
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "71")
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", "5")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", "13")
@@ -42,6 +43,7 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.DEFAULT_FALLBACK_LLM_MODEL == "openrouter/free"
     assert cfg.DEFAULT_FALLBACK_LLM_TOKEN == "fallback-token"
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 17
+    assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 71
     assert cfg.LLM_MAX_RETRIES == 4
     assert cfg.PRIMARY_FREE_MODEL_INTERVAL_SECONDS == 5
     assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS == 13
@@ -58,6 +60,16 @@ def test_config_default_primary_token_empty(monkeypatch):
     monkeypatch.delenv("PRIMARY_LLM_API_KEY", raising=False)
     cfg = _reload_config()
     assert isinstance(cfg.DEFAULT_LLM_TOKEN, str)
+
+
+def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "30")
+
+    cfg = _reload_config()
+
+    assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 120
+    assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 120
 
 
 def test_config_get_config_issues_ok_and_optional(monkeypatch):

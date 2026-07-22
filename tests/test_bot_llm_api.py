@@ -88,6 +88,23 @@ def test_call_llm_api_with_meta_success(monkeypatch):
     assert answer["url"].startswith("https://openrouter.ai/")
 
 
+def test_call_llm_api_with_meta_uses_timeout_override(monkeypatch):
+    _set_runtime_token(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured["timeout"] = timeout
+        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    bot.call_llm_api_with_meta(
+        [{"role": "user", "content": "large combined request"}],
+        request_timeout_seconds_override=90,
+    )
+
+    assert captured["timeout"] == 90
+
+
 def test_call_llm_api_with_meta_uses_actual_model_from_response(monkeypatch):
     _set_runtime_token(monkeypatch)
 
@@ -1011,13 +1028,19 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
         max_attempts_override=None,
     ):
         captured["validator"] = response_validator
+        captured["messages"] = messages
         assert response_validator(
             "Новость без ссылки", SimpleNamespace(model="model/test")
         )
+        assert len(messages) == 4
+        assert messages[-2] == {"role": "assistant", "content": "Новость без ссылки"}
+        assert messages[-1]["role"] == "user"
+        assert "[Оригинал](URL)" in messages[-1]["content"]
         assert response_validator(
             "Новость — [оригинал](https://t.me/invented/99)",
             SimpleNamespace(model="model/test"),
         )
+        assert len(messages) == 4
         assert (
             response_validator(
                 f"Новость — [оригинал]({source_url})",
@@ -1045,6 +1068,7 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
 
     assert source_url in result["answer"]
     assert captured["validator"] is not None
+    assert len(captured["messages"]) == 4
 
 
 def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch):
@@ -1291,6 +1315,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
         rate_limit_notifier=None,
         requested_model=None,
         required_source_urls=None,
+        request_timeout_seconds=None,
     ):
         calls["llm"].append(
             (
@@ -1299,6 +1324,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
                 period_text,
                 requested_model,
                 required_source_urls,
+                request_timeout_seconds,
             )
         )
         return {
@@ -1343,7 +1369,14 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
 
     assert (processed, skipped) == (2, 0)
     assert len(calls["llm"]) == 1
-    combined_history, combined_query, period_text, _, required_urls = calls["llm"][0]
+    (
+        combined_history,
+        combined_query,
+        period_text,
+        _,
+        required_urls,
+        request_timeout_seconds,
+    ) = calls["llm"][0]
     assert "ИСТОЧНИК 1" in combined_history
     assert "ИСТОЧНИК 2" in combined_history
     assert "https://t.me/source_a/11" in combined_history
@@ -1353,6 +1386,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
         "https://t.me/source_a/11",
         "https://t.me/source_b/22",
     }
+    assert request_timeout_seconds == bot.config.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS
     assert "https://example.com/article" not in required_urls
     assert period_text.startswith("непрочитанные сообщения")
     assert all(item[3] is True for item in calls["histories"])

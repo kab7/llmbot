@@ -49,7 +49,11 @@ The combined result must cite URLs copied from the supplied history. A response
 without a real source URL, or with an invented Telegram URL, is rejected by the
 response validator. Telegram provides links for public channels and for private
 channels/supergroups when a message ID is known. Legacy private `Chat` entities
-do not have usable permalinks.
+do not have usable permalinks. After the first citation rejection, the next
+attempt receives the rejected answer and a focused instruction to copy exact
+URLs from the `Оригинал` markers. Combined requests use
+`COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) instead of the ordinary
+LLM timeout.
 
 ## Periods
 

@@ -37,6 +37,10 @@ SESSION_NAME = os.getenv("SESSION_NAME", "telethon_session")
 # Количество сообщений для загрузки, если период не указан
 DEFAULT_MESSAGES_LIMIT = 300
 LLM_REQUEST_TIMEOUT_SECONDS = max(5, _parse_int_env("LLM_REQUEST_TIMEOUT_SECONDS", 20))
+COMBINED_LLM_REQUEST_TIMEOUT_SECONDS = max(
+    LLM_REQUEST_TIMEOUT_SECONDS,
+    _parse_int_env("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", 90),
+)
 LLM_MAX_RETRIES = max(1, _parse_int_env("LLM_MAX_RETRIES", 3))
 PRIMARY_FREE_MODEL_INTERVAL_SECONDS = max(
     0, _parse_int_env("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
