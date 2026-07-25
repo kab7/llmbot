@@ -55,6 +55,11 @@ URLs from the `Оригинал` markers. Combined requests use
 `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) instead of the ordinary
 LLM timeout.
 
+The response must contain at least one canonical `Оригинал` URL, but additional
+Telegram URLs may come from anywhere in the supplied message text. Duplicate
+URLs are accepted. Only Telegram URLs absent from the entire history are treated
+as invented.
+
 ## Periods
 
 Previous calendar day:

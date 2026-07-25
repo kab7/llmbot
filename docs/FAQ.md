@@ -234,6 +234,11 @@ links instead of repeating the same response. Candidate statistics count the
 first response as `rejected`; provider timeouts and transport failures are
 counted as technical errors.
 
+At least one citation must still come from an `Оригинал` marker. Other Telegram
+links are accepted when they occur anywhere in the supplied history, including
+inside message text. Repeating the same URL is allowed and has no effect on
+validation.
+
 ## What does HTTP 429 handling do?
 
 The current candidate is skipped. Free models reserve a provider/scope pacing

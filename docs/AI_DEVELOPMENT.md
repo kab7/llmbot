@@ -175,7 +175,11 @@ Folder history loading is sequential. There are two processing modes:
 message line includes its original permalink. The processor is instructed to
 cite relevant links and deduplicate repeated events. Its response validator
 requires at least one URL copied from the history when linkable URLs exist and
-rejects Telegram URLs absent from the history. On the first citation-only
+rejects Telegram URLs absent from the history. The first condition uses only
+canonical `[Оригинал]` permalinks. The anti-hallucination condition compares
+against every literal URL in the supplied history, including links embedded in
+message text and source headers. URL sets intentionally ignore duplicates. On
+the first citation-only
 rejection, the mutable request conversation is extended with the rejected
 assistant answer and a focused instruction to copy exact URLs from the
 `Оригинал` markers. Later candidates and retry rounds therefore repair the
@@ -414,10 +418,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-07-23 with Python 3.12.13:
+Last verified on 2026-07-26 with Python 3.12.13:
 
 - 140 tests passed;
-- total configured coverage: 76.02%;
+- total configured coverage: 76.03%;
 - `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

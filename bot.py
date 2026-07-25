@@ -3134,6 +3134,7 @@ async def _process_chat_with_openai_result(
                 ),
             },
         ]
+        history_urls = set(URL_PATTERN.findall(chat_history or ""))
 
         citation_repair_added = False
 
@@ -3173,7 +3174,7 @@ async def _process_chat_with_openai_result(
                     url
                     for url in response_urls
                     if url.startswith(("https://t.me/", "http://t.me/"))
-                    and url not in required_source_urls
+                    and url not in history_urls
                 }
                 if invented_telegram_urls:
                     reason = "ответ содержит ссылку Telegram, которой нет в истории"

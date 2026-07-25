@@ -36,6 +36,9 @@ behavior is defined by code and tests.
 
 ### Changed
 
+- Telegram-link hallucination checks now compare against every URL present in
+  the supplied history rather than only canonical `Оригинал` markers; duplicate
+  URLs remain valid and are ignored by set-based validation.
 - Date validation now normalizes `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/`
   source-URL paths, preventing grounded verbalized dates from being rejected.
 - Rebuilt all documentation from current code behavior, including folders,

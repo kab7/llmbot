@@ -1102,6 +1102,7 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
 def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
     captured = {}
     source_url = "https://t.me/source_a/11"
+    embedded_url = "https://t.me/source_b/22"
 
     def fake_call(
         messages,
@@ -1131,6 +1132,16 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
             )
             is None
         )
+        assert (
+            response_validator(
+                (
+                    f"Новость — [оригинал]({source_url}), "
+                    f"[контекст]({embedded_url}), повтор: {embedded_url}"
+                ),
+                SimpleNamespace(model="model/test"),
+            )
+            is None
+        )
         return {
             "content": f"Новость — [оригинал]({source_url})",
             "model": "model/test",
@@ -1142,7 +1153,10 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
 
     result = asyncio.run(
         bot._process_chat_with_openai_result(
-            f"Source [Оригинал]({source_url})",
+            (
+                f"Source [Оригинал]({source_url}) and "
+                f"embedded Telegram reference [details]({embedded_url})"
+            ),
             "сделай общую сводку",
             "вчера",
             required_source_urls={source_url},
