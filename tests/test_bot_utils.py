@@ -377,6 +377,20 @@ def test_analyze_summary_quality_accepts_date_from_source_url():
     assert issues == []
 
 
+def test_analyze_summary_quality_accepts_literal_russian_dates_from_history():
+    history = (
+        "[2026-07-31 12:00:00] News: регистрация открыта до "
+        "15 августа 2026, договор действует до 31 декабря 2032. "
+        "Повтор: 15 августа 2026."
+    )
+    summary = "Сроки: 15 августа 2026 и 31 декабря 2032."
+
+    score, issues = bot._analyze_summary_quality(summary, history)
+
+    assert score == 0
+    assert issues == []
+
+
 def test_analyze_summary_quality_detects_boilerplate():
     history = "[2026-03-10 13:08:44] User: пример"
     bad_summary = (

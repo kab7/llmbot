@@ -53,7 +53,8 @@ do not have usable permalinks. After the first citation rejection, the next
 attempt receives the rejected answer and a focused instruction to copy exact
 URLs from the `Оригинал` markers. Combined requests use
 `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) instead of the ordinary
-LLM timeout.
+LLM timeout. All provider calls set `max_tokens` from
+`LLM_MAX_OUTPUT_TOKENS` (default `4096`).
 
 The response must contain at least one canonical `Оригинал` URL, but additional
 Telegram URLs may come from anywhere in the supplied message text. Duplicate

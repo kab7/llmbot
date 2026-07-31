@@ -152,9 +152,11 @@ Combined results cite the original posts. Public channels use
 `t.me/c/...`; Telegram cannot generate a permalink for a legacy private
 `Chat`. A combined LLM request uses `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS`
 (90 seconds by default) because its payload can be much larger than a per-chat
-request. If the first otherwise valid answer omits exact source permalinks or
-invents Telegram URLs, the next model attempt receives the rejected answer plus
-a focused citation-repair instruction.
+request. Every provider request limits its answer to
+`LLM_MAX_OUTPUT_TOKENS` (4096 tokens by default), avoiding excessive completion
+reservation and OpenRouter credit errors. If the first otherwise valid answer
+omits exact source permalinks or invents Telegram URLs, the next model attempt
+receives the rejected answer plus a focused citation-repair instruction.
 
 When an analysis result exceeds one Telegram message, the bot packs whole news
 items or paragraphs into successive messages instead of cutting at an arbitrary

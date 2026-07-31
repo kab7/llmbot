@@ -32,6 +32,7 @@ def _set_runtime_token(
 ):
     monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
+    monkeypatch.setattr(bot.config, "LLM_MAX_OUTPUT_TOKENS", 4096)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
     monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
@@ -71,6 +72,7 @@ def test_call_llm_api_success(monkeypatch):
     assert answer == "ok-answer"
     assert captured["url"].endswith("/chat/completions")
     assert captured["json"]["model"] == "model/test"
+    assert captured["json"]["max_tokens"] == 4096
     assert captured["headers"]["Authorization"].startswith("Bearer ")
 
 

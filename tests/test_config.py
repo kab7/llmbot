@@ -22,6 +22,7 @@ def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "17")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "71")
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "3072")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", "5")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", "13")
     monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", "3")
@@ -45,6 +46,7 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 17
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 71
     assert cfg.LLM_MAX_RETRIES == 4
+    assert cfg.LLM_MAX_OUTPUT_TOKENS == 3072
     assert cfg.PRIMARY_FREE_MODEL_INTERVAL_SECONDS == 5
     assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS == 13
     assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS == 3
@@ -70,6 +72,14 @@ def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):
 
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 120
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 120
+
+
+def test_max_output_tokens_has_safe_minimum(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "10")
+
+    cfg = _reload_config()
+
+    assert cfg.LLM_MAX_OUTPUT_TOKENS == 256
 
 
 def test_config_get_config_issues_ok_and_optional(monkeypatch):

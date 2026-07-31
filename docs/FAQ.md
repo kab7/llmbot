@@ -227,6 +227,11 @@ ordinary calls use `LLM_REQUEST_TIMEOUT_SECONDS` (20 seconds by default). There
 is no token-aware chunking, so reduce the period or folder size when provider
 context limits are reached.
 
+The outgoing completion budget is always bounded by
+`LLM_MAX_OUTPUT_TOKENS` (4096 by default). Without an explicit `max_tokens`,
+OpenRouter may price the request as if the model could use the whole remaining
+context window and return HTTP 402 even when the intended summary is short.
+
 If an otherwise valid combined answer has no exact original-post link or
 contains an invented Telegram link, it is rejected. The next candidate or retry
 receives that answer plus a citation-repair instruction, so it can correct the
@@ -238,6 +243,10 @@ At least one citation must still come from an `Оригинал` marker. Other T
 links are accepted when they occur anywhere in the supplied history, including
 inside message text. Repeating the same URL is allowed and has no effect on
 validation.
+
+Date grounding follows the same principle: numeric timestamps, dates embedded
+in URL paths, and Russian dates literally present in message text are all valid.
+Repeated dates do not change validation.
 
 ## What does HTTP 429 handling do?
 

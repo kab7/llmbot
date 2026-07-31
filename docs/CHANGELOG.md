@@ -7,6 +7,9 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Configurable `LLM_MAX_OUTPUT_TOKENS` completion cap (default `4096`) in every
+  provider payload, preventing large-context requests from reserving tens of
+  thousands of output tokens at OpenRouter.
 - Explicit `deepseek`/`дипсик` request alias that selects only configured
   DeepSeek candidates while preserving their provider routes and fallback order.
 - Provider safety-filter classification from `finish_reason`, before citation
@@ -36,6 +39,9 @@ behavior is defined by code and tests.
 
 ### Changed
 
+- Russian-language dates written literally in source history are now accepted
+  by summary grounding checks, in addition to dates derived from timestamps and
+  URL paths.
 - Telegram-link hallucination checks now compare against every URL present in
   the supplied history rather than only canonical `Оригинал` markers; duplicate
   URLs remain valid and are ignored by set-based validation.

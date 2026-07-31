@@ -243,6 +243,11 @@ validator rejection move to the next candidate. A `429` also moves to the next
 candidate. Free models have separate primary/fallback pacing and growing 429
 backoff, configured by the `*_FREE_MODEL_*` variables.
 
+Every chat-completions payload sets `max_tokens` from
+`LLM_MAX_OUTPUT_TOKENS` (default `4096`, minimum `256`). This bounds completion
+cost and prevents providers such as OpenRouter from reserving the entire
+remaining context window when the field is omitted.
+
 `_call_llm_api_internal()` accepts a per-call timeout override. It is used by
 combined folder analysis so large merged payloads do not inherit the shorter
 ordinary-request timeout.
@@ -292,7 +297,9 @@ rejects suspicious HTML/code artifacts, unexpected scripts, excessive mixed
 scripts, boilerplate, and dates not supported by the supplied history. Numeric
 dates in both `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/` URL paths are
 normalized to the same calendar date, so a model may safely verbalize a date
-that is present in an original source URL. Combined
+that is present in an original source URL. Russian dates written literally in
+message text are also normalized and accepted; duplicate occurrences are
+irrelevant because validation uses sets. Combined
 folder calls additionally reject missing or invented source links as described
 above and append one citation-repair turn after the first such rejection.
 `_cleanup_summary_text()` then removes known presentation artifacts.
@@ -392,6 +399,8 @@ Use `env.example` as the variable inventory. Important path behavior:
 
 - `.env` updates always target `Path(".env")`, relative to the process working
   directory;
+- `LLM_MAX_OUTPUT_TOKENS` controls the `max_tokens` field sent to every model
+  and defaults to `4096`;
 - `SESSION_NAME`, `SCHEDULES_FILE`, `LOG_FILE_PATH`, and
   `LLM_TRAFFIC_LOG_PATH` may be absolute or working-directory-relative;
 - Docker sets all mutable paths to `/data` and bind-mounts
@@ -418,10 +427,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-07-26 with Python 3.12.13:
+Last verified on 2026-08-01 with Python 3.12.13:
 
-- 140 tests passed;
-- total configured coverage: 76.03%;
+- 142 tests passed;
+- total configured coverage: 76.05%;
 - `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

@@ -705,6 +705,10 @@ def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
         month = int(month_str)
         day = int(day_str)
         allowed.add(f"{day} {RU_MONTHS_GENITIVE[month - 1]} {year}")
+    allowed.update(
+        f"{int(day)} {month.lower()} {int(year)}"
+        for day, month, year in RU_DATE_PATTERN.findall(chat_history or "")
+    )
     return allowed
 
 
@@ -1257,6 +1261,7 @@ def _call_llm_api_internal(
                     payload = {
                         "model": candidate.model,
                         "messages": messages,
+                        "max_tokens": config.LLM_MAX_OUTPUT_TOKENS,
                     }
                     headers = _build_llm_headers(
                         candidate.url, candidate.token, candidate.model
