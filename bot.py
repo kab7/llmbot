@@ -310,6 +310,24 @@ RU_MONTHS_GENITIVE = [
 NUMERIC_DATE_PATTERN = re.compile(
     r"(?<!\d)(20\d{2})[-/](\d{2})[-/](\d{2})(?!\d)"
 )
+HISTORY_MESSAGE_START_PATTERN = re.compile(
+    r"(?m)^\[20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] "
+)
+COMBINED_SOURCE_ABSENCE_PATTERNS = (
+    re.compile(
+        r"\b(?:в\s+)?(?:предоставленн\w+\s+)?"
+        r"(?:истори\w+|контекст\w+|данн\w+)\b.{0,160}?"
+        r"\b(?:только|лишь)\b.{0,40}?\bодн\w+\s+"
+        r"(?:канал\w+|источник\w+)",
+        flags=re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        r"\b(?:сообщени\w+|данн\w+|информаци\w+)\s+(?:из|от)\s+"
+        r"(?:друг\w+|остальн\w+)\s+(?:источник\w+|канал\w+)\b"
+        r".{0,120}?\b(?:отсутств\w+|не\s+(?:представлен\w+|содерж\w+))",
+        flags=re.IGNORECASE | re.DOTALL,
+    ),
+)
 
 
 def escape_markdown(text: str) -> str:
@@ -710,6 +728,31 @@ def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
         for day, month, year in RU_DATE_PATTERN.findall(chat_history or "")
     )
     return allowed
+
+
+def _claims_combined_sources_missing(summary_text: str) -> bool:
+    """Detect a leading false claim that combined history has only one source."""
+    prefix = (summary_text or "")[:2000]
+    return any(pattern.search(prefix) for pattern in COMBINED_SOURCE_ABSENCE_PATTERNS)
+
+
+def _format_combined_source_manifest(
+    sources: list[tuple[int, str, int]],
+) -> str:
+    lines = [
+        "=== РЕЕСТР ФАКТИЧЕСКИ ЗАГРУЖЕННЫХ ИСТОЧНИКОВ ===",
+        (
+            f"Всего источников: {len(sources)}. Все перечисленные источники "
+            "присутствуют в данных ниже."
+        ),
+    ]
+    for source_idx, source_name, message_count in sources:
+        clean_name = " ".join(str(source_name).split())
+        lines.append(
+            f"{source_idx}. {clean_name} — загружено сообщений: {message_count}"
+        )
+    lines.append("=== КОНЕЦ РЕЕСТРА ИСТОЧНИКОВ ===")
+    return "\n".join(lines)
 
 
 def _count_mixed_script_tokens(text: str) -> int:
@@ -3110,6 +3153,7 @@ async def _process_chat_with_openai_result(
     requested_model: Optional[str] = None,
     required_source_urls: Optional[set[str]] = None,
     request_timeout_seconds: Optional[int] = None,
+    combined_sources: Optional[list[tuple[int, str, int]]] = None,
 ) -> dict[str, Any]:
     """
     Обрабатывает историю чата согласно запросу пользователя
@@ -3141,11 +3185,13 @@ async def _process_chat_with_openai_result(
         ]
         history_urls = set(URL_PATTERN.findall(chat_history or ""))
 
-        citation_repair_added = False
+        validation_repair_added = False
 
-        def request_citation_repair(content: str, reason: str) -> None:
-            nonlocal citation_repair_added
-            if citation_repair_added:
+        def request_validation_repair(
+            content: str, reason: str, instruction: str
+        ) -> None:
+            nonlocal validation_repair_added
+            if validation_repair_added:
                 return
             messages.extend(
                 [
@@ -3153,27 +3199,56 @@ async def _process_chat_with_openai_result(
                     {
                         "role": "user",
                         "content": (
-                            f"Предыдущий ответ отклонён: {reason}. Перепиши итоговый "
-                            "ответ и для каждого пункта добавь точные markdown-ссылки "
-                            "на релевантные исходные посты. Копируй URL только из "
-                            "маркеров [Оригинал](URL) в переданной истории. Не "
-                            "выдумывай и не изменяй URL. Верни только исправленный итог."
+                            f"Предыдущий ответ отклонён: {reason}. {instruction}"
                         ),
                     },
                 ]
             )
-            citation_repair_added = True
+            validation_repair_added = True
 
         def summary_validator(content: str, candidate) -> Optional[str]:
             score, issues = _analyze_summary_quality(content, chat_history)
             if score > 0:
                 return "; ".join(issues) or "подозрительное качество саммари"
 
+            if combined_sources and len(combined_sources) > 1:
+                if _claims_combined_sources_missing(content):
+                    reason = (
+                        "ложно указано, что в объединённой истории присутствует "
+                        "только один источник или отсутствуют остальные"
+                    )
+                    manifest = _format_combined_source_manifest(combined_sources)
+                    request_validation_repair(
+                        content,
+                        reason,
+                        (
+                            "История фактически содержит все источники из реестра:\n"
+                            f"{manifest}\n"
+                            "Пересобери общий результат по всему переданному контексту. "
+                            "Не утверждай, что перечисленные источники отсутствуют. "
+                            "Не нужно искусственно включать каждый источник: выбирай "
+                            "релевантные события, сопоставляй дубликаты и добавляй "
+                            "точные ссылки [оригинал](URL) из истории. Верни только "
+                            "исправленный итог."
+                        ),
+                    )
+                    return reason
+
             if required_source_urls:
                 response_urls = set(URL_PATTERN.findall(content or ""))
                 if not response_urls.intersection(required_source_urls):
                     reason = "нет точной ссылки на исходный пост"
-                    request_citation_repair(content, reason)
+                    request_validation_repair(
+                        content,
+                        reason,
+                        (
+                            "Перепиши итоговый ответ и для каждого пункта добавь "
+                            "точные markdown-ссылки на релевантные исходные посты. "
+                            "Копируй URL только из маркеров [Оригинал](URL) в "
+                            "переданной истории. Не выдумывай и не изменяй URL. "
+                            "Верни только исправленный итог."
+                        ),
+                    )
                     return reason
                 invented_telegram_urls = {
                     url
@@ -3183,7 +3258,17 @@ async def _process_chat_with_openai_result(
                 }
                 if invented_telegram_urls:
                     reason = "ответ содержит ссылку Telegram, которой нет в истории"
-                    request_citation_repair(content, reason)
+                    request_validation_repair(
+                        content,
+                        reason,
+                        (
+                            "Перепиши итоговый ответ и для каждого пункта добавь "
+                            "точные markdown-ссылки на релевантные исходные посты. "
+                            "Копируй URL только из маркеров [Оригинал](URL) в "
+                            "переданной истории. Не выдумывай и не изменяй URL. "
+                            "Верни только исправленный итог."
+                        ),
+                    )
                     return reason
             return None
 
@@ -3946,6 +4031,7 @@ async def _process_combined_folder(
 ) -> tuple[int, int]:
     """Загружает истории всех чатов папки и отправляет их в один LLM-запрос."""
     history_blocks: list[str] = []
+    source_manifest: list[tuple[int, str, int]] = []
     source_urls: set[str] = set()
     processed_sources: list[tuple[Any, str]] = []
     skipped_count = 0
@@ -4001,6 +4087,8 @@ async def _process_combined_folder(
         history_blocks.append(
             f"=== ИСТОЧНИК {idx}: {source_label} ===\n{chat_history}"
         )
+        message_count = len(HISTORY_MESSAGE_START_PATTERN.findall(chat_history))
+        source_manifest.append((idx, chat_name, max(1, message_count)))
         source_urls.update(ORIGINAL_POST_LINK_PATTERN.findall(chat_history))
         processed_sources.append((chat_entity, chat_name))
 
@@ -4017,19 +4105,30 @@ async def _process_combined_folder(
     combined_query = (
         f"{query}\n\n"
         "Сформируй один общий результат по всем источникам вместе. "
+        "Реестр источников до и после истории является фактическим: все "
+        "перечисленные источники и их блоки присутствуют в переданных данных. "
+        "Не утверждай, что источник отсутствует, если он указан в реестре. "
         "Не делай отдельное саммари каждого канала. Сопоставляй и дедуплицируй "
         "повторяющиеся события. Для каждого пункта обязательно укажи исходный "
         "канал или каналы и добавь точные markdown-ссылки [оригинал](URL) на "
         "релевантные исходные посты из истории. Если событие подтверждают "
         "несколько постов, приведи несколько ссылок. Не выдумывай URL."
     )
+    manifest_text = _format_combined_source_manifest(source_manifest)
+    joined_history = "\n\n".join(history_blocks)
+    combined_history = (
+        f"{manifest_text}\n\n"
+        f"{joined_history}\n\n"
+        f"{manifest_text}"
+    )
     llm_result = await _process_chat_with_openai_result(
-        "\n\n".join(history_blocks),
+        combined_history,
         combined_query,
         f"{period_text}; источников: {len(processed_sources)}",
         requested_model=requested_model,
         required_source_urls=source_urls or None,
         request_timeout_seconds=config.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS,
+        combined_sources=source_manifest,
     )
     result = llm_result.get("answer", "")
     analysis_ok = bool(llm_result.get("ok", True))

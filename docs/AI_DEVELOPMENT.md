@@ -178,13 +178,21 @@ requires at least one URL copied from the history when linkable URLs exist and
 rejects Telegram URLs absent from the history. The first condition uses only
 canonical `[Оригинал]` permalinks. The anti-hallucination condition compares
 against every literal URL in the supplied history, including links embedded in
-message text and source headers. URL sets intentionally ignore duplicates. On
-the first citation-only
-rejection, the mutable request conversation is extended with the rejected
-assistant answer and a focused instruction to copy exact URLs from the
-`Оригинал` markers. Later candidates and retry rounds therefore repair the
-answer instead of receiving an identical prompt. Only one repair turn is
-appended.
+message text and source headers. URL sets intentionally ignore duplicates.
+
+On both sides of the source blocks, combined history includes an authoritative
+manifest with source indexes, names, and loaded text-message counts. A
+high-precision validator rejects a leading meta-claim that only one source is
+present or that all other sources are absent when the manifest contains more
+than one. It does not require every source to appear in the result.
+
+On the first repairable citation or source-presence rejection, the mutable
+request conversation is extended with the rejected assistant answer and a
+focused correction instruction. Citation repair copies exact URLs from the
+`Оригинал` markers. Source-presence repair includes the authoritative manifest
+and explicitly allows selecting only relevant sources. Later candidates and
+retry rounds therefore repair the answer instead of receiving an identical
+prompt. Only one validation-repair turn is appended.
 
 Combined folder analysis passes
 `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) to the HTTP layer. The
@@ -299,9 +307,10 @@ dates in both `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/` URL paths are
 normalized to the same calendar date, so a model may safely verbalize a date
 that is present in an original source URL. Russian dates written literally in
 message text are also normalized and accepted; duplicate occurrences are
-irrelevant because validation uses sets. Combined
-folder calls additionally reject missing or invented source links as described
-above and append one citation-repair turn after the first such rejection.
+irrelevant because validation uses sets. Combined folder calls additionally
+reject missing or invented source links and false leading claims that supplied
+multi-source history contains only one source. They append one repair turn after
+the first repairable rejection, as described above.
 `_cleanup_summary_text()` then removes known presentation artifacts.
 
 The complete payload and response are logged to `llm_traffic.log`. Every
@@ -427,10 +436,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-08-01 with Python 3.12.13:
+Last verified on 2026-08-04 with Python 3.12.13:
 
-- 142 tests passed;
-- total configured coverage: 76.05%;
+- 144 tests passed;
+- total configured coverage: 76.28%;
 - `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

@@ -391,6 +391,20 @@ def test_analyze_summary_quality_accepts_literal_russian_dates_from_history():
     assert issues == []
 
 
+def test_combined_source_absence_claim_detection_is_high_precision():
+    assert bot._claims_combined_sources_missing(
+        "В предоставленной истории содержится информация только от одного "
+        "канала. Сообщения из других источников отсутствуют."
+    )
+    assert bot._claims_combined_sources_missing(
+        "Сообщения от остальных каналов в данных не представлены."
+    )
+    assert not bot._claims_combined_sources_missing(
+        "Эту конкретную новость сообщил только один канал; остальные события "
+        "подтверждены несколькими источниками."
+    )
+
+
 def test_analyze_summary_quality_detects_boilerplate():
     history = "[2026-03-10 13:08:44] User: пример"
     bad_summary = (

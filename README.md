@@ -157,6 +157,10 @@ request. Every provider request limits its answer to
 reservation and OpenRouter credit errors. If the first otherwise valid answer
 omits exact source permalinks or invents Telegram URLs, the next model attempt
 receives the rejected answer plus a focused citation-repair instruction.
+Combined input also contains an authoritative source manifest before and after
+the history. If a model falsely claims that only one source was supplied or
+that all other listed sources are absent, the answer is rejected and retried
+with the manifest. The bot does not force every source into the result.
 
 When an analysis result exceeds one Telegram message, the bot packs whole news
 items or paragraphs into successive messages instead of cutting at an arbitrary

@@ -7,6 +7,9 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Authoritative combined-folder source manifests with loaded message counts,
+  plus validation and one-turn repair for false model claims that only one
+  source was supplied or that all other sources are absent.
 - Configurable `LLM_MAX_OUTPUT_TOKENS` completion cap (default `4096`) in every
   provider payload, preventing large-context requests from reserving tens of
   thousands of output tokens at OpenRouter.

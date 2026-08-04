@@ -61,6 +61,12 @@ Telegram URLs may come from anywhere in the supplied message text. Duplicate
 URLs are accepted. Only Telegram URLs absent from the entire history are treated
 as invented.
 
+Combined input repeats an authoritative source-name and message-count manifest
+before and after the source blocks. An answer that falsely says only one source
+was supplied, or that all other sources are absent, is rejected and retried with
+that manifest. Results are still free to select news from only the relevant
+sources.
+
 ## Periods
 
 Previous calendar day:

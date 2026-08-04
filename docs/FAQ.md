@@ -248,6 +248,13 @@ Date grounding follows the same principle: numeric timestamps, dates embedded
 in URL paths, and Russian dates literally present in message text are all valid.
 Repeated dates do not change validation.
 
+Combined history contains a manifest of every successfully loaded source and
+its message count, repeated before and after the source blocks. A leading model
+claim that only one source is present or that all other listed sources are
+absent is rejected as contradicted by that manifest. The retry receives the
+exact source list. This check does not require artificial source diversity: a
+valid top-N result may cite only the channels that contain the selected events.
+
 ## What does HTTP 429 handling do?
 
 The current candidate is skipped. Free models reserve a provider/scope pacing

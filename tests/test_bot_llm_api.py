@@ -1170,6 +1170,71 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
     assert len(captured["messages"]) == 4
 
 
+def test_process_chat_with_openai_repairs_false_single_source_claim(monkeypatch):
+    source_url = "https://t.me/source_a/11"
+    combined_sources = [
+        (1, "Source A", 5),
+        (2, "Source B", 3),
+        (3, "Source C", 2),
+    ]
+
+    def fake_call(
+        messages,
+        candidates_override=None,
+        rate_limit_callback=None,
+        response_validator=None,
+        max_attempts_override=None,
+    ):
+        false_claim = (
+            "В предоставленной истории содержится информация только от одного "
+            "канала — Source A. Сообщения из других источников отсутствуют. "
+            f"[оригинал]({source_url})"
+        )
+        reason = response_validator(
+            false_claim, SimpleNamespace(model="model/test")
+        )
+        assert "только один источник" in reason
+        assert len(messages) == 4
+        assert messages[-2] == {"role": "assistant", "content": false_claim}
+        repair = messages[-1]["content"]
+        assert "Source A — загружено сообщений: 5" in repair
+        assert "Source B — загружено сообщений: 3" in repair
+        assert "Source C — загружено сообщений: 2" in repair
+        assert "Не нужно искусственно включать каждый источник" in repair
+        assert (
+            response_validator(
+                f"Главная новость — [оригинал]({source_url})",
+                SimpleNamespace(model="model/test"),
+            )
+            is None
+        )
+        return {
+            "content": f"Главная новость — [оригинал]({source_url})",
+            "model": "model/test",
+            "url": "https://example.test/v1",
+            "stats": {},
+        }
+
+    monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
+
+    result = asyncio.run(
+        bot._process_chat_with_openai_result(
+            (
+                "=== ИСТОЧНИК 1: Source A ===\n"
+                f"item [Оригинал]({source_url})\n"
+                "=== ИСТОЧНИК 2: Source B ===\nitem\n"
+                "=== ИСТОЧНИК 3: Source C ===\nitem"
+            ),
+            "сделай общую сводку",
+            "вчера",
+            required_source_urls={source_url},
+            combined_sources=combined_sources,
+        )
+    )
+
+    assert source_url in result["answer"]
+
+
 def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch):
     notifications = []
 
@@ -1415,6 +1480,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
         requested_model=None,
         required_source_urls=None,
         request_timeout_seconds=None,
+        combined_sources=None,
     ):
         calls["llm"].append(
             (
@@ -1424,6 +1490,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
                 requested_model,
                 required_source_urls,
                 request_timeout_seconds,
+                combined_sources,
             )
         )
         long_answer = "\n\n".join(
@@ -1485,7 +1552,11 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
         _,
         required_urls,
         request_timeout_seconds,
+        combined_sources,
     ) = calls["llm"][0]
+    assert combined_history.count("РЕЕСТР ФАКТИЧЕСКИ ЗАГРУЖЕННЫХ") == 2
+    assert "Source A — загружено сообщений: 1" in combined_history
+    assert "Source B — загружено сообщений: 1" in combined_history
     assert "ИСТОЧНИК 1" in combined_history
     assert "ИСТОЧНИК 2" in combined_history
     assert "https://t.me/source_a/11" in combined_history
@@ -1496,6 +1567,7 @@ def test_process_combined_folder_uses_one_llm_call_and_preserves_source_links(
         "https://t.me/source_b/22",
     }
     assert request_timeout_seconds == bot.config.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS
+    assert combined_sources == [(1, "Source A", 1), (2, "Source B", 1)]
     assert "https://example.com/article" not in required_urls
     assert period_text.startswith("непрочитанные сообщения")
     assert all(item[3] is True for item in calls["histories"])
