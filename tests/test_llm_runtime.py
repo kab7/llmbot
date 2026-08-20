@@ -21,6 +21,7 @@ def test_defaults_and_masking():
 
     assert settings.url == DEFAULT_OPENROUTER_URL
     assert settings.model == DEFAULT_OPENROUTER_MODEL
+    assert "deepseek" in settings.model.casefold()
     assert settings.masked_token() == "supe...oken"
     assert cfg.has_token() is True
     assert cfg.has_any_token() is True

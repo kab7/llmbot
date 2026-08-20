@@ -274,7 +274,7 @@ Explicit primary/fallback:
 Model scope is mandatory:
 
 ```text
-/setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free
+/setmodel primary deepseek/deepseek-v3.2
 /setmodel fallback openrouter/free
 ```
 
@@ -286,7 +286,7 @@ OpenRouter-compatible:
 
 ```dotenv
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_MODEL=deepseek/deepseek-v3.2
 PRIMARY_LLM_API_KEY=...
 ```
 

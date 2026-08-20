@@ -234,6 +234,11 @@ permalink.
 model value creates an ordered model list. Exact duplicate
 `(url, model, token)` candidates are removed.
 
+Without `PRIMARY_LLM_MODEL`, the source default is
+`deepseek/deepseek-v3.2` on the OpenRouter-compatible default endpoint. A
+deployment may configure a different DeepSeek route. The first comma-separated
+model is the default candidate for parser and analysis calls.
+
 At the standalone class level, passing `fallback_token=None` enables dynamic
 inheritance when the primary token changes. The application config normally
 passes a string: an absent `FALLBACK_LLM_TOKEN` copies the primary token value at
@@ -290,6 +295,14 @@ All providers must expose an OpenAI-style chat-completions response with
 provider rejection before the response validator runs. This prevents a safety
 refusal from being mislabeled as a missing citation and prevents citation-repair
 turns from being appended to the next model's request.
+
+`finish_reason=length` or `finish_reason=max_tokens` is never accepted as a
+successful answer, even when content is non-empty. The first such response adds
+one repair turn containing the partial assistant output when available and an
+instruction to rewrite from scratch, preserve the requested format, use shorter
+wording, and finish within `LLM_MAX_OUTPUT_TOKENS`. Subsequent candidates and
+rounds receive that repair context. If none returns a complete answer, the call
+fails and downstream mark-as-read remains disabled.
 
 For `ai.api.cloud.yandex.net`, `_build_llm_headers()` uses
 `Authorization: Api-Key` and derives `x-folder-id` from a model URI shaped like
@@ -436,10 +449,10 @@ python -m pytest
 all four runtime modules: `bot`, `config`, `llm_runtime`, and
 `schedule_runtime`.
 
-Last verified on 2026-08-04 with Python 3.12.13:
+Last verified on 2026-08-20 with Python 3.12.13:
 
-- 144 tests passed;
-- total configured coverage: 76.28%;
+- 147 tests passed;
+- total configured coverage: 76.36%;
 - `bot.py`: 73%;
 - `config.py`: 100%;
 - `llm_runtime.py`: 100%;

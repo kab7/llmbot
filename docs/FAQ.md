@@ -149,6 +149,12 @@ history. The next candidate is then tried. Provider
 `finish_reason=content_filter`/`safety` is recorded directly as a provider
 rejection rather than being mislabeled as a citation failure.
 
+`finish_reason=length`/`max_tokens` means the provider truncated the completion.
+The partial text is never delivered as a successful summary. On the first such
+response, the next attempt is instructed to rewrite the entire result more
+compactly and finish within `LLM_MAX_OUTPUT_TOKENS`. If all candidates remain
+truncated, the bot returns an explicit failure and does not mark chats read.
+
 Dates embedded in original URLs as `/YYYY/MM/DD/` count as source evidence just
 like `YYYY-MM-DD` Telegram history timestamps. A Russian date verbalized from
 such a URL is therefore accepted.
@@ -231,6 +237,8 @@ The outgoing completion budget is always bounded by
 `LLM_MAX_OUTPUT_TOKENS` (4096 by default). Without an explicit `max_tokens`,
 OpenRouter may price the request as if the model could use the whole remaining
 context window and return HTTP 402 even when the intended summary is short.
+The cap does not allow partial output: hitting it triggers the compact rewrite
+flow described above.
 
 If an otherwise valid combined answer has no exact original-post link or
 contains an invented Telegram link, it is rejected. The next candidate or retry

@@ -64,6 +64,15 @@ def test_config_default_primary_token_empty(monkeypatch):
     assert isinstance(cfg.DEFAULT_LLM_TOKEN, str)
 
 
+def test_config_default_primary_model_is_deepseek(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
+    monkeypatch.delenv("PRIMARY_LLM_MODEL", raising=False)
+
+    cfg = _reload_config()
+
+    assert cfg.DEFAULT_LLM_MODEL == "deepseek/deepseek-v3.2"
+
+
 def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "30")

@@ -447,6 +447,100 @@ def test_call_llm_api_content_filter_tries_next_model_without_citation_repair(
     assert result["stats"]["provider/alice"]["rejected"] == 1
 
 
+def test_call_llm_api_rewrites_length_limited_response_compactly(monkeypatch):
+    _set_runtime_token(
+        monkeypatch,
+        model="provider/deepseek",
+        fallback_model="provider/deepseek",
+    )
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 2)
+    payloads = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        payloads.append(
+            {
+                "model": json["model"],
+                "messages": [dict(message) for message in json["messages"]],
+            }
+        )
+        if len(payloads) == 1:
+            return DummyResponse(
+                200,
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Обрезанный ответ"},
+                            "finish_reason": "length",
+                        }
+                    ]
+                },
+            )
+        return DummyResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Краткий завершённый ответ."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(bot.requests, "post", fake_post)
+    result = bot.call_llm_api_with_meta(
+        [{"role": "user", "content": "Сделай полную сводку"}]
+    )
+
+    assert result["content"] == "Краткий завершённый ответ."
+    assert len(payloads) == 2
+    assert payloads[1]["messages"][-2] == {
+        "role": "assistant",
+        "content": "Обрезанный ответ",
+    }
+    repair = payloads[1]["messages"][-1]
+    assert repair["role"] == "user"
+    assert "Перепиши ответ заново" in repair["content"]
+    assert "4096 выходных токенов" in repair["content"]
+    assert result["stats"]["provider/deepseek"] == {
+        "requests": 2,
+        "rate_limits": 0,
+        "successes": 1,
+        "rejected": 1,
+        "errors": 0,
+    }
+
+
+def test_call_llm_api_never_accepts_empty_length_limited_response(monkeypatch):
+    _set_runtime_token(
+        monkeypatch,
+        model="provider/deepseek",
+        fallback_model="provider/deepseek",
+    )
+    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 1)
+    messages = [{"role": "user", "content": "Сделай полную сводку"}]
+
+    monkeypatch.setattr(
+        bot.requests,
+        "post",
+        lambda *args, **kwargs: DummyResponse(
+            200,
+            {
+                "choices": [
+                    {"message": {"content": ""}, "finish_reason": "length"}
+                ]
+            },
+        ),
+    )
+
+    with pytest.raises(Exception, match="обрезал ответ"):
+        bot.call_llm_api(messages)
+
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "user"
+    assert "полностью закончи ответ" in messages[-1]["content"]
+
+
 def test_build_requested_model_candidates_deepseek_alias_uses_configured_routes(
     monkeypatch,
 ):

@@ -62,7 +62,7 @@ before startup:
 
 ```dotenv
 PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+PRIMARY_LLM_MODEL=deepseek/deepseek-v3.2
 PRIMARY_LLM_API_KEY=...
 ```
 

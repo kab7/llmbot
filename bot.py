@@ -1243,6 +1243,29 @@ def _call_llm_api_internal(
                     return str(message)
             return str(data)[:300]
 
+        length_repair_added = False
+
+        def request_length_repair(content: str) -> None:
+            nonlocal length_repair_added
+            if length_repair_added:
+                return
+            if content:
+                messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Предыдущий ответ был обрезан провайдером из-за лимита "
+                        f"{config.LLM_MAX_OUTPUT_TOKENS} выходных токенов. "
+                        "Перепиши ответ заново, а не продолжай с места обрыва. "
+                        "Сохрани исходные требования и формат, используй более "
+                        "краткие формулировки и обязательно полностью закончи "
+                        "ответ в пределах этого лимита."
+                    ),
+                }
+            )
+            length_repair_added = True
+
         logger.info(
             f"📤 HTTP POST candidates: {', '.join([c.model for c in candidates])}"
         )
@@ -1493,6 +1516,27 @@ def _call_llm_api_internal(
                         if candidate_idx < len(scope_candidates):
                             logger.warning(
                                 "↪️ После отказа '%s' пробую следующую модель '%s'",
+                                candidate.model,
+                                scope_candidates[candidate_idx].model,
+                            )
+                        continue
+
+                    if finish_reason in {"length", "max_tokens"}:
+                        model_stats["rejected"] += 1
+                        rejection_reason = (
+                            "провайдер обрезал ответ по лимиту выходных токенов "
+                            f"(finish_reason={finish_reason})"
+                        )
+                        last_error = Exception(rejection_reason)
+                        request_length_repair(content or "")
+                        logger.warning(
+                            "⚠️ Ответ модели '%s' отклонен как незавершённый: %s",
+                            candidate.model,
+                            rejection_reason,
+                        )
+                        if candidate_idx < len(scope_candidates):
+                            logger.warning(
+                                "↪️ После обрезанного ответа от '%s' пробую следующую модель '%s'",
                                 candidate.model,
                                 scope_candidates[candidate_idx].model,
                             )

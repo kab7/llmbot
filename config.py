@@ -81,7 +81,7 @@ DEFAULT_LLM_URL = (
     os.getenv("PRIMARY_LLM_URL") or "https://openrouter.ai/api/v1/chat/completions"
 )
 DEFAULT_LLM_MODEL = (
-    os.getenv("PRIMARY_LLM_MODEL") or "meta-llama/llama-3.3-70b-instruct:free"
+    os.getenv("PRIMARY_LLM_MODEL") or "deepseek/deepseek-v3.2"
 )
 DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
 DEFAULT_FALLBACK_LLM_URL = os.getenv(

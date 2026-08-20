@@ -7,6 +7,9 @@ behavior is defined by code and tests.
 
 ### Added
 
+- Completion-truncation handling for `finish_reason=length`/`max_tokens`:
+  partial answers are rejected, one compact full-rewrite instruction is added,
+  and exhaustion fails safely instead of delivering an unfinished summary.
 - Authoritative combined-folder source manifests with loaded message counts,
   plus validation and one-turn repair for false model claims that only one
   source was supplied or that all other sources are absent.
@@ -42,6 +45,8 @@ behavior is defined by code and tests.
 
 ### Changed
 
+- DeepSeek (`deepseek/deepseek-v3.2`) is now the source default primary model;
+  production model order is configured separately through `.env`.
 - Russian-language dates written literally in source history are now accepted
   by summary grounding checks, in addition to dates derived from timestamps and
   URL paths.
