@@ -45,11 +45,11 @@ PRIMARY_LLM_API_KEY=<yandex_api_key>
 
 FALLBACK_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
 FALLBACK_LLM_MODEL=gpt://<folder_id>/aliceai-llm/latest
-FALLBACK_LLM_TOKEN=<yandex_api_key>
+FALLBACK_LLM_TOKEN=
 ```
 
-An empty `FALLBACK_LLM_TOKEN` means the fallback has no token. If the variable is
-absent, the startup value of `PRIMARY_LLM_API_KEY` is copied once; later
+An empty `FALLBACK_LLM_TOKEN` disables fallback scope. If the variable is absent,
+the startup value of `PRIMARY_LLM_API_KEY` is copied once; later
 `/settoken primary` changes do not update that copy. Set the fallback token
 explicitly when authenticated fallback is required. See `env.example` for retry,
 pacing, logging, and data-path settings.

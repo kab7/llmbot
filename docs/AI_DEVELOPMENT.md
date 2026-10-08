@@ -246,6 +246,7 @@ inheritance when the primary token changes. The application config normally
 passes a string: an absent `FALLBACK_LLM_TOKEN` copies the primary token value at
 startup, while an explicitly empty variable produces an empty fallback token.
 Neither application path dynamically follows later `/settoken primary` changes.
+Scopes without a token are omitted from the candidate list.
 
 The normal call order in `_call_llm_api_internal()` is:
 

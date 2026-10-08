@@ -151,6 +151,19 @@ def test_runtime_candidates_deduplicate_and_any_token():
     )
     assert no_token_cfg.has_token() is False
     assert no_token_cfg.has_any_token() is False
+    assert no_token_cfg.get_candidate_settings() == []
+
+    fallback_only_cfg = LLMRuntimeConfig(
+        "https://primary/v1",
+        "",
+        "primary/model",
+        fallback_url="https://fallback/v1",
+        fallback_token="fallback-token",
+        fallback_model="fallback/model",
+    )
+    fallback_only_candidates = fallback_only_cfg.get_candidate_settings()
+    assert len(fallback_only_candidates) == 1
+    assert fallback_only_candidates[0].scope == "fallback"
 
 
 def test_runtime_setters_validation():

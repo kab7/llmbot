@@ -155,20 +155,18 @@ class LLMRuntimeConfig:
         fallback = self.get_fallback_settings()
         candidates: list[LLMSettings] = []
         seen: set[tuple[str, str, str]] = set()
-        for model_name in self._split_models(primary.model):
-            candidate = LLMSettings(
-                primary.url, primary.token, model_name, scope="primary"
-            )
-            key = (candidate.url, candidate.model, candidate.token)
-            if key not in seen:
-                candidates.append(candidate)
-                seen.add(key)
-        for model_name in self._split_models(fallback.model):
-            candidate = LLMSettings(
-                fallback.url, fallback.token, model_name, scope="fallback"
-            )
-            key = (candidate.url, candidate.model, candidate.token)
-            if key not in seen:
-                candidates.append(candidate)
-                seen.add(key)
+        for settings in (primary, fallback):
+            if not settings.token:
+                continue
+            for model_name in self._split_models(settings.model):
+                candidate = LLMSettings(
+                    settings.url,
+                    settings.token,
+                    model_name,
+                    scope=settings.scope,
+                )
+                key = (candidate.url, candidate.model, candidate.token)
+                if key not in seen:
+                    candidates.append(candidate)
+                    seen.add(key)
         return candidates
