@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 
 
 DEFAULT_YANDEX_URL = "https://ai.api.cloud.yandex.net/v1/chat/completions"
-DEFAULT_YANDEX_MODEL = "gpt://your_folder_id/deepseek-v4-flash/latest"
+DEFAULT_YANDEX_MODEL = "gpt://your_folder_id/deepseek-v4.1-flash/latest"
 DEFAULT_FALLBACK_MODEL = "gpt://your_folder_id/aliceai-llm/latest"
 YANDEX_AI_HOST = "ai.api.cloud.yandex.net"
 

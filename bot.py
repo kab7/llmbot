@@ -3646,7 +3646,7 @@ async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ Укажи scope модели: primary или fallback.\n"
             "Пример: /setmodel primary "
-            "gpt://<folder_id>/deepseek-v4-flash/latest,"
+            "gpt://<folder_id>/deepseek-v4.1-flash/latest,"
             "gpt://<folder_id>/aliceai-llm/latest"
         )
         return

@@ -70,7 +70,10 @@ def test_config_default_primary_model_is_deepseek(monkeypatch):
 
     cfg = _reload_config()
 
-    assert cfg.DEFAULT_LLM_MODEL == "gpt://your_folder_id/deepseek-v4-flash/latest"
+    assert (
+        cfg.DEFAULT_LLM_MODEL
+        == "gpt://your_folder_id/deepseek-v4.1-flash/latest"
+    )
 
 
 def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):

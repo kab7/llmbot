@@ -51,7 +51,7 @@ behavior is defined by code and tests.
 
 ### Changed
 
-- Yandex Cloud DeepSeek (`deepseek-v4-flash`) is now the source default primary
+- Yandex Cloud DeepSeek (`deepseek-v4.1-flash`) is now the source default primary
   model; production model order is configured separately through `.env`.
 - Russian-language dates written literally in source history are now accepted
   by summary grounding checks, in addition to dates derived from timestamps and

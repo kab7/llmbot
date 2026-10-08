@@ -235,7 +235,7 @@ model value creates an ordered model list. Exact duplicate
 `(url, model, token)` candidates are removed.
 
 Without `PRIMARY_LLM_MODEL`, the source default is Yandex Cloud DeepSeek
-`gpt://your_folder_id/deepseek-v4-flash/latest` on the Yandex Cloud
+`gpt://your_folder_id/deepseek-v4.1-flash/latest` on the Yandex Cloud
 chat-completions endpoint. The fallback source default is Yandex Cloud Alice
 `gpt://your_folder_id/aliceai-llm/latest`. A deployment must replace the
 placeholder folder ID. The first comma-separated primary model is the default

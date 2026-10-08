@@ -272,7 +272,7 @@ Explicit primary/fallback:
 Model scope is mandatory:
 
 ```text
-/setmodel primary gpt://<folder_id>/deepseek-v4-flash/latest
+/setmodel primary gpt://<folder_id>/deepseek-v4.1-flash/latest
 /setmodel fallback gpt://<folder_id>/aliceai-llm/latest
 ```
 

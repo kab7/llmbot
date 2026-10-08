@@ -83,7 +83,7 @@ DEFAULT_LLM_URL = (
 )
 DEFAULT_LLM_MODEL = (
     os.getenv("PRIMARY_LLM_MODEL")
-    or "gpt://your_folder_id/deepseek-v4-flash/latest"
+    or "gpt://your_folder_id/deepseek-v4.1-flash/latest"
 )
 DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
 DEFAULT_FALLBACK_LLM_URL = (

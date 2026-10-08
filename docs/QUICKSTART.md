@@ -40,7 +40,7 @@ Configure at least one LLM token:
 
 ```dotenv
 PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-PRIMARY_LLM_MODEL=gpt://<folder_id>/deepseek-v4-flash/latest
+PRIMARY_LLM_MODEL=gpt://<folder_id>/deepseek-v4.1-flash/latest
 PRIMARY_LLM_API_KEY=<yandex_api_key>
 
 FALLBACK_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
