@@ -39,13 +39,13 @@ ADMIN_USER_ID=...
 Configure at least one LLM token:
 
 ```dotenv
-PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=deepseek/deepseek-v3.2
-PRIMARY_LLM_API_KEY=...
+PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+PRIMARY_LLM_MODEL=gpt://<folder_id>/deepseek-v4-flash/latest
+PRIMARY_LLM_API_KEY=<yandex_api_key>
 
-FALLBACK_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-FALLBACK_LLM_MODEL=openrouter/free
-FALLBACK_LLM_TOKEN=
+FALLBACK_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+FALLBACK_LLM_MODEL=gpt://<folder_id>/aliceai-llm/latest
+FALLBACK_LLM_TOKEN=<yandex_api_key>
 ```
 
 An empty `FALLBACK_LLM_TOKEN` means the fallback has no token. If the variable is
@@ -108,7 +108,6 @@ Schedule example:
 - `/context`
 - `/reset`
 - `/llmconfig`
-- `/limits [primary|fallback]`
 - `/seturl [primary|fallback] <url>`
 - `/setmodel primary|fallback <model[,model2,...]>`
 - `/settoken [primary|fallback] <token>`

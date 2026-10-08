@@ -234,10 +234,12 @@ permalink.
 model value creates an ordered model list. Exact duplicate
 `(url, model, token)` candidates are removed.
 
-Without `PRIMARY_LLM_MODEL`, the source default is
-`deepseek/deepseek-v3.2` on the OpenRouter-compatible default endpoint. A
-deployment may configure a different DeepSeek route. The first comma-separated
-model is the default candidate for parser and analysis calls.
+Without `PRIMARY_LLM_MODEL`, the source default is Yandex Cloud DeepSeek
+`gpt://your_folder_id/deepseek-v4-flash/latest` on the Yandex Cloud
+chat-completions endpoint. The fallback source default is Yandex Cloud Alice
+`gpt://your_folder_id/aliceai-llm/latest`. A deployment must replace the
+placeholder folder ID. The first comma-separated primary model is the default
+candidate for parser and analysis calls.
 
 At the standalone class level, passing `fallback_token=None` enables dynamic
 inheritance when the primary token changes. The application config normally
@@ -258,8 +260,8 @@ backoff, configured by the `*_FREE_MODEL_*` variables.
 
 Every chat-completions payload sets `max_tokens` from
 `LLM_MAX_OUTPUT_TOKENS` (default `4096`, minimum `256`). This bounds completion
-cost and prevents providers such as OpenRouter from reserving the entire
-remaining context window when the field is omitted.
+cost and prevents providers from reserving the entire remaining context window
+when the field is omitted.
 
 `_call_llm_api_internal()` accepts a per-call timeout override. It is used by
 combined folder analysis so large merged payloads do not inherit the shorter
@@ -308,9 +310,6 @@ For `ai.api.cloud.yandex.net`, `_build_llm_headers()` uses
 `Authorization: Api-Key` and derives `x-folder-id` from a model URI shaped like
 `gpt://<folder_id>/<model>`. Other providers use bearer authorization.
 
-`/limits` derives an OpenRouter-style `.../key` endpoint. It is intentionally not
-supported for Yandex Cloud.
-
 ### Summary quality checks
 
 The processor prompt requires Russian, grounded output. A response validator
@@ -328,7 +327,7 @@ the first repairable rejection, as described above.
 
 The complete payload and response are logged to `llm_traffic.log`. Every
 configured handler uses `RedactingFormatter`, which removes registered exact
-secrets and recognizable Telegram/OpenRouter/header/query credential forms from
+secrets and recognizable Telegram/legacy-provider/header/query credential forms from
 the final formatted record, including traceback text. HTTP-client loggers are
 kept at `WARNING` to prevent credential-bearing request URLs from reaching
 handlers in the first place. `/settoken` must register the new value before any

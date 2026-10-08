@@ -40,24 +40,12 @@ class DummyContext:
         self.args = args or []
 
 
-class DummyResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload
-        self.text = text
-
-    def json(self):
-        if self._payload is None:
-            raise ValueError("no json")
-        return self._payload
-
-
 def _reset_runtime(monkeypatch, env_path):
     monkeypatch.setattr(
         bot,
         "llm_runtime",
         LLMRuntimeConfig(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "https://example.com/api/v1/chat/completions",
             "token-0000000000",
             "meta-llama/llama-3.3-70b-instruct:free",
         ),
@@ -137,35 +125,6 @@ def test_set_commands_usage_and_validation(monkeypatch, tmp_path):
     assert any("/settoken <token>" in text for text in texts)
     assert any("URL должен начинаться" in text for text in texts)
     assert any("Значение token не указано" in text for text in texts)
-
-
-def test_limits_command_success_and_errors(monkeypatch, tmp_path):
-    _reset_runtime(monkeypatch, tmp_path / ".env")
-    bot.llm_runtime.set_fallback_url("https://fallback.example/v1")
-    update = DummyUpdate(user_id=1)
-    calls = []
-
-    def fake_get(url, headers, timeout):
-        calls.append((url, headers, timeout))
-        if "openrouter.ai/api/v1/key" in url:
-            return DummyResponse(
-                status_code=200,
-                payload={"data": {"label": "primary", "limit": 1000, "usage": 12}},
-                text="",
-            )
-        return DummyResponse(status_code=503, payload={"error": "down"}, text="down")
-
-    monkeypatch.setattr(bot.requests, "get", fake_get)
-
-    asyncio.run(bot.limits_command(update, DummyContext([])))
-    asyncio.run(bot.limits_command(update, DummyContext(["fallback"])))
-    asyncio.run(bot.limits_command(update, DummyContext(["wrong"])))
-
-    texts = [text for text, _ in update.message.replies]
-    assert any("Лимиты (primary)" in text for text in texts)
-    assert any("HTTP 503" in text for text in texts)
-    assert any("Использование: /limits [primary|fallback]" in text for text in texts)
-    assert calls[0][0].endswith("/v1/key")
 
 
 def test_admin_only_blocks_non_admin(monkeypatch, tmp_path):

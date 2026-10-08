@@ -138,7 +138,7 @@ tried three times without configured fallback.
 
 For a DeepSeek-only request, use `через дипсик`, `через deepseek`, or
 `используй DeepSeek`. The bot skips Alice and tries only configured DeepSeek
-candidates, keeping their own Yandex/OpenRouter endpoints and normal
+candidates, keeping their own configured endpoints and normal
 primary/fallback order.
 
 ## Why did a model response get rejected?
@@ -169,8 +169,7 @@ PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
 PRIMARY_LLM_API_KEY=...
 ```
 
-The bot uses `Authorization: Api-Key` and `x-folder-id`. `/limits` is only for
-OpenRouter-style key endpoints and refuses Yandex Cloud.
+The bot uses `Authorization: Api-Key` and `x-folder-id`.
 
 ## How are schedules stored and run?
 
@@ -235,8 +234,8 @@ context limits are reached.
 
 The outgoing completion budget is always bounded by
 `LLM_MAX_OUTPUT_TOKENS` (4096 by default). Without an explicit `max_tokens`,
-OpenRouter may price the request as if the model could use the whole remaining
-context window and return HTTP 402 even when the intended summary is short.
+Some providers may price the request as if the model could use the whole
+remaining context window and reject it even when the intended summary is short.
 The cap does not allow partial output: hitting it triggers the compact rewrite
 flow described above.
 

@@ -61,8 +61,8 @@ At least one LLM token is needed to analyze messages. It may be configured
 before startup:
 
 ```dotenv
-PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=deepseek/deepseek-v3.2
+PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
+PRIMARY_LLM_MODEL=gpt://<folder_id>/deepseek-v4-flash/latest
 PRIMARY_LLM_API_KEY=...
 ```
 
@@ -113,7 +113,6 @@ The checked-in Compose file maps host `/data/srv/data/llmbot` to container
 | `/context` | Show the in-memory target and period. |
 | `/reset` | Clear in-memory context. |
 | `/llmconfig` | Show primary/fallback URL, model lists, and masked tokens. |
-| `/limits [primary\|fallback]` | Call an OpenRouter-style key-limits endpoint; defaults to primary. |
 | `/seturl [primary\|fallback] <url>` | Change and persist an endpoint; defaults to primary. |
 | `/setmodel primary\|fallback <model[,model2,...]>` | Change and persist an ordered model list; scope is required. |
 | `/settoken [primary\|fallback] <token>` | Change and persist a token; defaults to primary. |
@@ -154,7 +153,7 @@ Combined results cite the original posts. Public channels use
 (90 seconds by default) because its payload can be much larger than a per-chat
 request. Every provider request limits its answer to
 `LLM_MAX_OUTPUT_TOKENS` (4096 tokens by default), avoiding excessive completion
-reservation and OpenRouter credit errors. If the first otherwise valid answer
+reservation and provider credit errors. If the first otherwise valid answer
 omits exact source permalinks or invents Telegram URLs, the next model attempt
 receives the rejected answer plus a focused citation-repair instruction.
 Combined input also contains an authoritative source manifest before and after
@@ -224,7 +223,7 @@ PRIMARY_LLM_API_KEY=...
 ```
 
 The bot then sends `Authorization: Api-Key` and derives `x-folder-id` from the
-model URI. `/limits` is not supported for Yandex Cloud.
+model URI.
 
 ## Runtime files and privacy
 

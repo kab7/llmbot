@@ -2,9 +2,9 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
-DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v3.2"
-DEFAULT_FALLBACK_MODEL = "openrouter/free"
+DEFAULT_YANDEX_URL = "https://ai.api.cloud.yandex.net/v1/chat/completions"
+DEFAULT_YANDEX_MODEL = "gpt://your_folder_id/deepseek-v4-flash/latest"
+DEFAULT_FALLBACK_MODEL = "gpt://your_folder_id/aliceai-llm/latest"
 YANDEX_AI_HOST = "ai.api.cloud.yandex.net"
 
 
@@ -78,7 +78,7 @@ class LLMRuntimeConfig:
             else (fallback_token or "").strip()
         )
         self._fallback_settings = LLMSettings(
-            url=normalize_chat_completions_url(fallback_url or DEFAULT_OPENROUTER_URL),
+            url=normalize_chat_completions_url(fallback_url or DEFAULT_YANDEX_URL),
             token=fallback_token_value,
             model=self._normalize_model(fallback_model or DEFAULT_FALLBACK_MODEL),
         )

@@ -17,7 +17,7 @@ def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("PRIMARY_LLM_MODEL", "provider/test-model")
     monkeypatch.setenv("PRIMARY_LLM_API_KEY", "primary-key")
     monkeypatch.setenv("FALLBACK_LLM_URL", "https://fallback.ai/v1")
-    monkeypatch.setenv("FALLBACK_LLM_MODEL", "openrouter/free")
+    monkeypatch.setenv("FALLBACK_LLM_MODEL", "provider/fallback-model")
     monkeypatch.setenv("FALLBACK_LLM_TOKEN", "fallback-token")
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "17")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "71")
@@ -41,7 +41,7 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.DEFAULT_LLM_MODEL == "provider/test-model"
     assert cfg.DEFAULT_LLM_TOKEN == "primary-key"
     assert cfg.DEFAULT_FALLBACK_LLM_URL == "https://fallback.ai/v1"
-    assert cfg.DEFAULT_FALLBACK_LLM_MODEL == "openrouter/free"
+    assert cfg.DEFAULT_FALLBACK_LLM_MODEL == "provider/fallback-model"
     assert cfg.DEFAULT_FALLBACK_LLM_TOKEN == "fallback-token"
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 17
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 71
@@ -70,7 +70,7 @@ def test_config_default_primary_model_is_deepseek(monkeypatch):
 
     cfg = _reload_config()
 
-    assert cfg.DEFAULT_LLM_MODEL == "deepseek/deepseek-v3.2"
+    assert cfg.DEFAULT_LLM_MODEL == "gpt://your_folder_id/deepseek-v4-flash/latest"
 
 
 def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):

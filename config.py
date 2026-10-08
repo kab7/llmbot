@@ -74,20 +74,25 @@ LLM_TRAFFIC_LOG_MAX_BYTES = max(
 )
 LLM_TRAFFIC_LOG_BACKUP_COUNT = max(1, _parse_int_env("LLM_TRAFFIC_LOG_BACKUP_COUNT", 5))
 
-# LLM настройки по умолчанию (OpenRouter-compatible API)
+# LLM настройки по умолчанию (Yandex Cloud OpenAI-compatible API)
 # Можно переопределить через команды /seturl /settoken /setmodel во время работы бота.
 # PRIMARY_LLM_* - основной namespace переменных.
 DEFAULT_LLM_URL = (
-    os.getenv("PRIMARY_LLM_URL") or "https://openrouter.ai/api/v1/chat/completions"
+    os.getenv("PRIMARY_LLM_URL")
+    or "https://ai.api.cloud.yandex.net/v1/chat/completions"
 )
 DEFAULT_LLM_MODEL = (
-    os.getenv("PRIMARY_LLM_MODEL") or "deepseek/deepseek-v3.2"
+    os.getenv("PRIMARY_LLM_MODEL")
+    or "gpt://your_folder_id/deepseek-v4-flash/latest"
 )
 DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
-DEFAULT_FALLBACK_LLM_URL = os.getenv(
-    "FALLBACK_LLM_URL", "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_FALLBACK_LLM_URL = (
+    os.getenv("FALLBACK_LLM_URL") or DEFAULT_LLM_URL
 )
-DEFAULT_FALLBACK_LLM_MODEL = os.getenv("FALLBACK_LLM_MODEL", "openrouter/free")
+DEFAULT_FALLBACK_LLM_MODEL = (
+    os.getenv("FALLBACK_LLM_MODEL")
+    or "gpt://your_folder_id/aliceai-llm/latest"
+)
 DEFAULT_FALLBACK_LLM_TOKEN = os.getenv("FALLBACK_LLM_TOKEN", DEFAULT_LLM_TOKEN)
 
 REQUIRED_CONFIG_DESCRIPTIONS = {

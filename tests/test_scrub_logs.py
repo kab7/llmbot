@@ -31,7 +31,7 @@ def test_runtime_formatter_redacts_tokens_headers_queries_and_tracebacks():
                 f"https://api.telegram.org/bot{telegram_token}/getMe "
                 "Authorization: Bearer bearer-secret "
                 "https://example.test/?access_token=query-secret "
-                "sk-or-v1-openrouter-secret"
+                "sk-or-v1-legacy-provider-secret"
             ),
             args=(),
             exc_info=__import__("sys").exc_info(),
@@ -44,7 +44,7 @@ def test_runtime_formatter_redacts_tokens_headers_queries_and_tracebacks():
         opaque_secret,
         "bearer-secret",
         "query-secret",
-        "sk-or-v1-openrouter-secret",
+        "sk-or-v1-legacy-provider-secret",
     ):
         assert secret not in rendered
     assert rendered.count(bot.LOG_REDACTION_MARKER) >= 5

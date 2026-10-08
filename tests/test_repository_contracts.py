@@ -20,7 +20,6 @@ EXPECTED_COMMANDS = {
     "context",
     "reset",
     "llmconfig",
-    "limits",
     "seturl",
     "setmodel",
     "settoken",

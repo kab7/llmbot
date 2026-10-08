@@ -2,8 +2,8 @@ import pytest
 
 from llm_runtime import (
     DEFAULT_FALLBACK_MODEL,
-    DEFAULT_OPENROUTER_MODEL,
-    DEFAULT_OPENROUTER_URL,
+    DEFAULT_YANDEX_MODEL,
+    DEFAULT_YANDEX_URL,
     LLMRuntimeConfig,
     LLMSettings,
     extract_yandex_folder_id,
@@ -14,18 +14,18 @@ from llm_runtime import (
 
 def test_defaults_and_masking():
     cfg = LLMRuntimeConfig(
-        DEFAULT_OPENROUTER_URL, "supersecrettoken", DEFAULT_OPENROUTER_MODEL
+        DEFAULT_YANDEX_URL, "supersecrettoken", DEFAULT_YANDEX_MODEL
     )
     settings = cfg.get_settings()
     fallback = cfg.get_fallback_settings()
 
-    assert settings.url == DEFAULT_OPENROUTER_URL
-    assert settings.model == DEFAULT_OPENROUTER_MODEL
+    assert settings.url == DEFAULT_YANDEX_URL
+    assert settings.model == DEFAULT_YANDEX_MODEL
     assert "deepseek" in settings.model.casefold()
     assert settings.masked_token() == "supe...oken"
     assert cfg.has_token() is True
     assert cfg.has_any_token() is True
-    assert fallback.url == DEFAULT_OPENROUTER_URL
+    assert fallback.url == DEFAULT_YANDEX_URL
     assert fallback.model == DEFAULT_FALLBACK_MODEL
     assert fallback.token == "supersecrettoken"
 
@@ -38,10 +38,10 @@ def test_masked_token_variants():
 
 def test_normalize_chat_completions_url_variants():
     assert normalize_chat_completions_url(
-        "https://openrouter.ai/api/v1/chat/completions"
-    ) == ("https://openrouter.ai/api/v1/chat/completions")
-    assert normalize_chat_completions_url("https://openrouter.ai/api/v1/") == (
-        "https://openrouter.ai/api/v1/chat/completions"
+        "https://example.com/api/v1/chat/completions"
+    ) == ("https://example.com/api/v1/chat/completions")
+    assert normalize_chat_completions_url("https://example.com/api/v1/") == (
+        "https://example.com/api/v1/chat/completions"
     )
     assert normalize_chat_completions_url("https://example.com/v1") == (
         "https://example.com/v1/chat/completions"
@@ -56,7 +56,7 @@ def test_normalize_chat_completions_url_validation():
         normalize_chat_completions_url("")
 
     with pytest.raises(ValueError, match="http:// или https://"):
-        normalize_chat_completions_url("openrouter.ai/api/v1")
+        normalize_chat_completions_url("example.com/api/v1")
 
 
 def test_yandex_url_and_model_helpers():
@@ -70,7 +70,7 @@ def test_yandex_url_and_model_helpers():
         )
         is True
     )
-    assert is_yandex_chat_completions_url("https://openrouter.ai/api/v1") is False
+    assert is_yandex_chat_completions_url("https://example.com/api/v1") is False
     assert (
         extract_yandex_folder_id("gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest")
         == "b1gd80qnnk1gu0ih57vg"
@@ -80,7 +80,7 @@ def test_yandex_url_and_model_helpers():
 
 def test_runtime_setters_and_get_copy():
     cfg = LLMRuntimeConfig(
-        "https://openrouter.ai/api/v1", "tokentoken12345", "model/one"
+        "https://example.com/api/v1", "tokentoken12345", "model/one"
     )
 
     assert cfg.set_url("https://host/v1") == "https://host/v1/chat/completions"
@@ -155,7 +155,7 @@ def test_runtime_candidates_deduplicate_and_any_token():
 
 def test_runtime_setters_validation():
     cfg = LLMRuntimeConfig(
-        "https://openrouter.ai/api/v1", "tokentoken12345", "model/one"
+        "https://example.com/api/v1", "tokentoken12345", "model/one"
     )
 
     with pytest.raises(ValueError, match="пустым"):
@@ -179,7 +179,7 @@ def test_runtime_setters_validation():
 
 def test_runtime_fallback_token_can_be_set_independently():
     cfg = LLMRuntimeConfig(
-        "https://openrouter.ai/api/v1", "primary-token-1", "model/one"
+        "https://example.com/api/v1", "primary-token-1", "model/one"
     )
     cfg.set_fallback_token("fallback-token-2")
     cfg.set_token("primary-token-3")
@@ -190,7 +190,7 @@ def test_runtime_fallback_token_can_be_set_independently():
 
 def test_runtime_fallback_url_setter():
     cfg = LLMRuntimeConfig(
-        "https://openrouter.ai/api/v1", "primary-token-1", "model/one"
+        "https://example.com/api/v1", "primary-token-1", "model/one"
     )
     assert (
         cfg.set_fallback_url("https://fallback.example/v1")
@@ -200,7 +200,7 @@ def test_runtime_fallback_url_setter():
 
 def test_runtime_normalizes_model_lists():
     cfg = LLMRuntimeConfig(
-        "https://openrouter.ai/api/v1",
+        "https://example.com/api/v1",
         "primary-token-1",
         " model/one , model/two ,, model/three ",
     )

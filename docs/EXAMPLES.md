@@ -251,22 +251,20 @@ Inspect:
 
 ```text
 /llmconfig
-/limits
-/limits fallback
 ```
 
 Primary endpoint/token default scope:
 
 ```text
-/seturl https://openrouter.ai/api/v1/chat/completions
+/seturl https://ai.api.cloud.yandex.net/v1/chat/completions
 /settoken <token>
 ```
 
 Explicit primary/fallback:
 
 ```text
-/seturl primary https://openrouter.ai/api/v1/chat/completions
-/seturl fallback https://openrouter.ai/api/v1/chat/completions
+/seturl primary https://ai.api.cloud.yandex.net/v1/chat/completions
+/seturl fallback https://ai.api.cloud.yandex.net/v1/chat/completions
 /settoken primary <token>
 /settoken fallback <token>
 ```
@@ -274,21 +272,13 @@ Explicit primary/fallback:
 Model scope is mandatory:
 
 ```text
-/setmodel primary deepseek/deepseek-v3.2
-/setmodel fallback openrouter/free
+/setmodel primary gpt://<folder_id>/deepseek-v4-flash/latest
+/setmodel fallback gpt://<folder_id>/aliceai-llm/latest
 ```
 
 Changes are applied in memory and persisted to `.env`.
 
 ## Provider configuration
-
-OpenRouter-compatible:
-
-```dotenv
-PRIMARY_LLM_URL=https://openrouter.ai/api/v1/chat/completions
-PRIMARY_LLM_MODEL=deepseek/deepseek-v3.2
-PRIMARY_LLM_API_KEY=...
-```
 
 Yandex Cloud:
 
@@ -298,8 +288,7 @@ PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
 PRIMARY_LLM_API_KEY=...
 ```
 
-Yandex uses `Api-Key` authorization and does not support the bot's `/limits`
-command.
+Yandex uses `Api-Key` authorization.
 
 ## Operational commands
 
@@ -310,7 +299,6 @@ command.
 /context
 /reset
 /llmconfig
-/limits primary
 /seturl primary <url>
 /setmodel primary <model>
 /settoken primary <token>

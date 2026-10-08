@@ -59,7 +59,7 @@ _SECRET_QUERY_VALUE_PATTERN = re.compile(
     r"(?i)([?&](?:access_token|api_key|apikey|token)="
     r")[^&#\s\"']+"
 )
-_OPENROUTER_TOKEN_PATTERN = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")
+_LEGACY_LLM_TOKEN_PATTERN = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")
 
 
 def register_sensitive_log_value(value: Optional[str]) -> None:
@@ -75,7 +75,7 @@ def redact_sensitive_text(value: Any) -> str:
     """Returns log-safe text without configured or recognizable credentials."""
     redacted = str(value)
     redacted = _TELEGRAM_BOT_TOKEN_PATTERN.sub(LOG_REDACTION_MARKER, redacted)
-    redacted = _OPENROUTER_TOKEN_PATTERN.sub(LOG_REDACTION_MARKER, redacted)
+    redacted = _LEGACY_LLM_TOKEN_PATTERN.sub(LOG_REDACTION_MARKER, redacted)
     redacted = _AUTHORIZATION_VALUE_PATTERN.sub(
         rf"\1{LOG_REDACTION_MARKER}", redacted
     )
@@ -1200,7 +1200,7 @@ def _call_llm_api_internal(
     max_attempts_override: Optional[int] = None,
     request_timeout_seconds_override: Optional[int] = None,
 ) -> Dict[str, str]:
-    """Вызов OpenRouter-compatible Chat Completions API с метаданными ответа."""
+    """Вызов OpenAI-compatible Chat Completions API с метаданными ответа."""
     try:
         if not llm_runtime.has_any_token():
             raise Exception("LLM токен не задан. Используй /settoken <token>.")
@@ -3483,7 +3483,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/schedules - показать периодические задачи\n"
         "/delschedule <id> - удалить периодическую задачу\n\n"
         "/llmconfig - показать текущие LLM настройки\n"
-        "/limits [primary|fallback] - показать лимиты API ключа\n"
         "/seturl [primary|fallback] <url> - задать URL API\n"
         "/setmodel [primary|fallback] <model[,model2,...]> - задать одну или несколько моделей\n"
         "/settoken [primary|fallback] <token> - задать API токен\n\n"
@@ -3580,31 +3579,6 @@ def _parse_scope_and_value(
     return scope, value, None
 
 
-def _parse_scope_only(args: list[str]) -> tuple[str, Optional[str]]:
-    """Разбирает optional scope: [] -> primary, [primary|fallback] -> scope."""
-    if not args:
-        return "primary", None
-    if len(args) != 1:
-        return "", "Использование: /limits [primary|fallback]"
-
-    scope = (args[0] or "").strip().lower()
-    if scope not in {"primary", "fallback"}:
-        return "", "Использование: /limits [primary|fallback]"
-    return scope, None
-
-
-def _derive_limits_endpoint(url: str) -> str:
-    """Преобразует chat/completions endpoint в endpoint лимитов (.../key)."""
-    parsed = urlsplit(url)
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/chat/completions"):
-        path = path[: -len("/chat/completions")]
-    elif path.endswith("/completions"):
-        path = path[: -len("/completions")]
-    key_path = f"{path}/key" if path else "/key"
-    return urlunsplit((parsed.scheme, parsed.netloc, key_path, "", ""))
-
-
 @admin_only
 async def llmconfig_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать текущие настройки LLM."""
@@ -3671,7 +3645,9 @@ async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if head not in {"primary", "fallback"}:
         await update.message.reply_text(
             "❌ Укажи scope модели: primary или fallback.\n"
-            "Пример: /setmodel primary meta-llama/llama-3.3-70b-instruct:free,qwen/qwen3-32b:free"
+            "Пример: /setmodel primary "
+            "gpt://<folder_id>/deepseek-v4-flash/latest,"
+            "gpt://<folder_id>/aliceai-llm/latest"
         )
         return
     scope = head
@@ -3736,67 +3712,6 @@ async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"✅ Токен ({scope}) обновлен: {masked}")
-
-
-@admin_only
-async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает лимиты API-ключа для primary/fallback конфигурации."""
-    scope, error = _parse_scope_only(context.args)
-    if error:
-        await update.message.reply_text(error)
-        return
-
-    settings = (
-        llm_runtime.get_fallback_settings()
-        if scope == "fallback"
-        else llm_runtime.get_settings()
-    )
-    if not settings.token:
-        await update.message.reply_text(
-            f"❌ Токен для {scope} не задан. Используй /settoken {scope} <token>"
-        )
-        return
-
-    limits_url = _derive_limits_endpoint(settings.url)
-    safe_limits_url = _sanitize_url_for_logs(limits_url)
-    if is_yandex_chat_completions_url(settings.url):
-        await update.message.reply_text(
-            "ℹ️ Команда /limits сейчас поддерживается только для OpenRouter-compatible key endpoint и не работает для Yandex Cloud."
-        )
-        return
-
-    headers = {"Authorization": f"Bearer {settings.token}"}
-    try:
-        response = await asyncio.to_thread(
-            requests.get,
-            limits_url,
-            headers=headers,
-            timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
-        )
-    except requests.exceptions.RequestException as e:
-        await update.message.reply_text(
-            f"❌ Не удалось получить лимиты ({scope}): {e}\nURL: {safe_limits_url}"
-        )
-        return
-
-    body = response.text
-    try:
-        parsed = response.json()
-        body = json.dumps(parsed, ensure_ascii=False, indent=2)
-    except Exception:
-        body = (body or "").strip()
-
-    if response.status_code != 200:
-        short_body = body[:2000] if body else "(пустой ответ)"
-        await update.message.reply_text(
-            f"❌ Ошибка получения лимитов ({scope}): HTTP {response.status_code}\n"
-            f"URL: {safe_limits_url}\n\n{short_body}"
-        )
-        return
-
-    text = f"📊 Лимиты ({scope})\nURL: {safe_limits_url}\n\n{body}"
-    for chunk in _split_text_chunks(text):
-        await update.message.reply_text(chunk)
 
 
 @admin_only
@@ -4690,7 +4605,6 @@ async def main():
     application.add_handler(CommandHandler("context", context_command))
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("llmconfig", llmconfig_command))
-    application.add_handler(CommandHandler("limits", limits_command))
     application.add_handler(CommandHandler("seturl", seturl_command))
     application.add_handler(CommandHandler("setmodel", setmodel_command))
     application.add_handler(CommandHandler("settoken", settoken_command))

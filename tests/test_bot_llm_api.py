@@ -28,7 +28,7 @@ def _set_runtime_token(
     monkeypatch,
     token="token-1234567890",
     model="model/test",
-    fallback_model="openrouter/free",
+    fallback_model="provider/fallback",
 ):
     monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
@@ -44,9 +44,10 @@ def _set_runtime_token(
         bot,
         "llm_runtime",
         LLMRuntimeConfig(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "https://api.example/v1/chat/completions",
             token,
             model,
+            fallback_url="https://fallback.example/v1",
             fallback_model=fallback_model,
         ),
     )
@@ -87,7 +88,7 @@ def test_call_llm_api_with_meta_success(monkeypatch):
 
     assert answer["content"] == "ok-answer"
     assert answer["model"] == "model/test"
-    assert answer["url"].startswith("https://openrouter.ai/")
+    assert answer["url"].startswith("https://api.example/")
 
 
 def test_call_llm_api_with_meta_uses_timeout_override(monkeypatch):
@@ -182,7 +183,7 @@ def test_call_llm_api_rejects_yandex_model_without_folder(monkeypatch):
         bot.call_llm_api([{"role": "user", "content": "hi"}])
 
 
-def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):
+def test_call_llm_api_fallback_to_configured_model_on_rate_limit(monkeypatch):
     _set_runtime_token(monkeypatch)
     monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
     seen_models = []
@@ -191,7 +192,7 @@ def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):
         seen_models.append(json["model"])
         if json["model"] == "model/test":
             return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        if json["model"] == "openrouter/free":
+        if json["model"] == "provider/fallback":
             return DummyResponse(
                 200, {"choices": [{"message": {"content": "ok-fallback"}}]}
             )
@@ -202,7 +203,7 @@ def test_call_llm_api_fallback_to_openrouter_free_on_rate_limit(monkeypatch):
 
     assert answer == "ok-fallback"
     assert seen_models.count("model/test") == 3
-    assert seen_models[-1] == "openrouter/free"
+    assert seen_models[-1] == "provider/fallback"
 
 
 def test_call_llm_api_fallback_uses_configured_url_token_and_model(monkeypatch):
@@ -554,9 +555,9 @@ def test_build_requested_model_candidates_deepseek_alias_uses_configured_routes(
                 "gpt://folder/aliceai-llm/latest,"
                 "gpt://folder/deepseek-v32/latest"
             ),
-            fallback_url="https://openrouter.ai/api/v1",
-            fallback_token="openrouter-token",
-            fallback_model="deepseek/deepseek-v3.2",
+            fallback_url="https://ai.api.cloud.yandex.net/v1",
+            fallback_token="fallback-yandex-token",
+            fallback_model="gpt://fallback-folder/deepseek-v4/latest",
         ),
     )
 
@@ -564,11 +565,11 @@ def test_build_requested_model_candidates_deepseek_alias_uses_configured_routes(
 
     assert [candidate.model for candidate in candidates] == [
         "gpt://folder/deepseek-v32/latest",
-        "deepseek/deepseek-v3.2",
+        "gpt://fallback-folder/deepseek-v4/latest",
     ]
     assert [candidate.scope for candidate in candidates] == ["primary", "fallback"]
     assert candidates[0].url == "https://ai.api.cloud.yandex.net/v1/chat/completions"
-    assert candidates[1].url == "https://openrouter.ai/api/v1/chat/completions"
+    assert candidates[1].url == "https://ai.api.cloud.yandex.net/v1/chat/completions"
 
 
 def test_call_llm_api_validation_and_failures(monkeypatch):
@@ -651,9 +652,9 @@ def test_call_llm_api_does_not_apply_interval_for_paid_models(monkeypatch):
         bot,
         "llm_runtime",
         LLMRuntimeConfig(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "https://api.example/v1/chat/completions",
             "token-1234567890",
-            "deepseek/deepseek-v3.2",
+            "provider/paid-model",
         ),
     )
     sleeps = []
@@ -976,7 +977,7 @@ def test_process_chat_with_openai(monkeypatch):
         return {
             "content": "summary",
             "model": "model/test",
-            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "url": "https://api.example/v1/chat/completions",
             "stats": {
                 "model/test": {
                     "requests": 1,
@@ -1030,7 +1031,7 @@ def test_process_chat_with_openai_strips_operational_parts_from_summary_query(
         return {
             "content": "summary",
             "model": "model/test",
-            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "url": "https://api.example/v1/chat/completions",
         }
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
@@ -1068,7 +1069,7 @@ def test_process_chat_with_openai_uses_requested_model_override(monkeypatch):
         return {
             "content": "summary",
             "model": "anthropic/claude-opus-4.6",
-            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "url": "https://api.example/v1/chat/completions",
             "stats": {
                 "anthropic/claude-opus-4.6": {
                     "requests": 1,
@@ -1346,7 +1347,7 @@ def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch)
         return {
             "content": "summary",
             "model": "meta-llama/llama-3.3-70b-instruct:free",
-            "url": "https://openrouter.ai/api/v1/chat/completions",
+            "url": "https://api.example/v1/chat/completions",
             "stats": {
                 "meta-llama/llama-3.3-70b-instruct:free": {
                     "requests": 1,

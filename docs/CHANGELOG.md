@@ -5,6 +5,12 @@ behavior is defined by code and tests.
 
 ## Unreleased
 
+### Removed
+
+- OpenRouter runtime defaults, fallback route, examples, and the provider-specific
+  `/limits` command. The shipped configuration now uses Yandex Cloud DeepSeek
+  with Yandex Cloud Alice as fallback.
+
 ### Added
 
 - Completion-truncation handling for `finish_reason=length`/`max_tokens`:
@@ -15,7 +21,7 @@ behavior is defined by code and tests.
   source was supplied or that all other sources are absent.
 - Configurable `LLM_MAX_OUTPUT_TOKENS` completion cap (default `4096`) in every
   provider payload, preventing large-context requests from reserving tens of
-  thousands of output tokens at OpenRouter.
+  thousands of output tokens at a provider.
 - Explicit `deepseek`/`дипсик` request alias that selects only configured
   DeepSeek candidates while preserving their provider routes and fallback order.
 - Provider safety-filter classification from `finish_reason`, before citation
@@ -28,7 +34,7 @@ behavior is defined by code and tests.
 - One-turn citation repair after a combined answer omits exact source links or
   invents Telegram URLs; subsequent candidates receive the rejected answer and
   correction instruction.
-- Final-record credential redaction for configured secrets, Telegram/OpenRouter
+- Final-record credential redaction for configured secrets, Telegram/legacy-provider
   tokens, Authorization values, query credentials, and traceback text.
 - `scripts/scrub_logs.py` for safe in-place cleanup of historical text logs.
 - Folder-wide `combined` mode: merge selected histories from all folder dialogs
@@ -45,8 +51,8 @@ behavior is defined by code and tests.
 
 ### Changed
 
-- DeepSeek (`deepseek/deepseek-v3.2`) is now the source default primary model;
-  production model order is configured separately through `.env`.
+- Yandex Cloud DeepSeek (`deepseek-v4-flash`) is now the source default primary
+  model; production model order is configured separately through `.env`.
 - Russian-language dates written literally in source history are now accepted
   by summary grounding checks, in addition to dates derived from timestamps and
   URL paths.
@@ -87,7 +93,7 @@ behavior is defined by code and tests.
 ### Changed
 
 - Removed the previous provider-specific LLM integration.
-- Moved LLM calls to OpenRouter-compatible Chat Completions.
+- Moved LLM calls to OpenAI-compatible Chat Completions.
 - Added mutable URL, token, and model configuration.
 
 ### Added

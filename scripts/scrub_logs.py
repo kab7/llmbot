@@ -22,7 +22,7 @@ SECRET_QUERY_VALUE_PATTERN = re.compile(
     r"(?i)([?&](?:access_token|api_key|apikey|token)="
     r")[^&#\s\"']+"
 )
-OPENROUTER_TOKEN_PATTERN = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")
+LEGACY_LLM_TOKEN_PATTERN = re.compile(r"sk-or-v1-[A-Za-z0-9_-]+")
 SENSITIVE_ENV_SUFFIXES = ("_TOKEN", "_API_KEY", "_API_HASH")
 
 
@@ -51,7 +51,7 @@ def redact_text(text: str, secrets: Iterable[str]) -> tuple[str, int]:
 
     for pattern, replacement in (
         (TELEGRAM_BOT_TOKEN_PATTERN, REDACTION_MARKER),
-        (OPENROUTER_TOKEN_PATTERN, REDACTION_MARKER),
+        (LEGACY_LLM_TOKEN_PATTERN, REDACTION_MARKER),
         (AUTHORIZATION_VALUE_PATTERN, rf"\1{REDACTION_MARKER}"),
         (SECRET_QUERY_VALUE_PATTERN, rf"\1{REDACTION_MARKER}"),
     ):
