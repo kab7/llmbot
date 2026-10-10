@@ -54,7 +54,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
         period_type="unread",
         period_value=None,
         query="суммаризируй",
-        requested_model="anthropic/claude-opus-4.6",
+        requested_model="gpt-specific",
         mark_as_read=True,
         chat_id=123,
         schedule_spec={
@@ -76,7 +76,7 @@ def test_build_record_save_load_and_recurrence_text(tmp_path: Path):
     loaded = load_schedules(file_path)
     assert loaded and loaded[0]["id"] == rec["id"]
     assert loaded[0]["folder_mode"] == "combined"
-    assert loaded[0]["requested_model"] == "anthropic/claude-opus-4.6"
+    assert loaded[0]["requested_model"] == "gpt-specific"
 
 
 def test_load_schedules_invalid_sqlite_returns_empty(tmp_path: Path):
@@ -223,3 +223,63 @@ def test_load_schedules_migrates_requested_model_column(tmp_path: Path):
     assert loaded[0]["requested_model"] is None
     assert loaded[0]["folder_mode"] is None
     assert loaded[0]["mark_as_read"] is False
+
+
+@pytest.mark.parametrize(
+    "legacy_model",
+    [
+        "deepseek",
+        "ДИПСИК",
+        "deepseek/deepseek-v3.2",
+        "gpt://folder/deepseek-v4.1-flash/latest",
+        "gpt://folder/aliceai-llm/latest",
+    ],
+)
+def test_load_schedules_clears_removed_provider_model_overrides(
+    tmp_path: Path, legacy_model: str
+):
+    db_path = tmp_path / "legacy-provider.db"
+    record = build_schedule_record(
+        target_type="folder",
+        target_name="news",
+        folder_mode="combined",
+        period_type="yesterday",
+        period_value=None,
+        query="Сделай одну общую сводку",
+        requested_model=legacy_model,
+        mark_as_read=False,
+        chat_id=123,
+        schedule_spec={
+            "recurrence_type": RECURRENCE_DAILY,
+            "time": "00:01",
+        },
+    )
+    save_schedules(db_path, [record])
+
+    loaded = load_schedules(db_path)
+
+    assert loaded[0]["requested_model"] is None
+
+
+def test_load_schedules_preserves_chatgpt_model_override(tmp_path: Path):
+    db_path = tmp_path / "chatgpt-model.db"
+    record = build_schedule_record(
+        target_type="chat",
+        target_name="Baza",
+        folder_mode=None,
+        period_type="today",
+        period_value=None,
+        query="Сделай сводку",
+        requested_model="gpt-5.2",
+        mark_as_read=False,
+        chat_id=123,
+        schedule_spec={
+            "recurrence_type": RECURRENCE_DAILY,
+            "time": "09:00",
+        },
+    )
+    save_schedules(db_path, [record])
+
+    loaded = load_schedules(db_path)
+
+    assert loaded[0]["requested_model"] == "gpt-5.2"

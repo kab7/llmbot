@@ -1,107 +1,68 @@
 # Changelog
 
-This file records repository changes, not planned features. Current runtime
-behavior is defined by code and tests.
+This file records repository changes. Current runtime behavior is defined by
+Python code and tests.
 
 ## Unreleased
 
 ### Removed
 
-- OpenRouter runtime defaults, fallback route, examples, and the provider-specific
-  `/limits` command. The shipped configuration now uses Yandex Cloud DeepSeek
-  with Yandex Cloud Alice as fallback.
+- All Yandex Cloud and OpenRouter runtime integrations, configuration variables,
+  model aliases, fallback scopes, free-model pacing, and endpoint/token commands.
+- `/seturl` and `/settoken`; OAuth secrets are no longer accepted through
+  Telegram or `.env`.
+- The mutable provider module and its provider-specific tests.
 
 ### Added
 
-- Completion-truncation handling for `finish_reason=length`/`max_tokens`:
-  partial answers are rejected, one compact full-rewrite instruction is added,
-  and exhaustion fails safely instead of delivering an unfinished summary.
-- Authoritative combined-folder source manifests with loaded message counts,
-  plus validation and one-turn repair for false model claims that only one
-  source was supplied or that all other sources are absent.
-- Configurable `LLM_MAX_OUTPUT_TOKENS` completion cap (default `4096`) in every
-  provider payload, preventing large-context requests from reserving tens of
-  thousands of output tokens at a provider.
-- Explicit `deepseek`/`дипсик` request alias that selects only configured
-  DeepSeek candidates while preserving their provider routes and fallback order.
-- Provider safety-filter classification from `finish_reason`, before citation
-  validation and repair logic.
-- Semantic splitting for long summaries: whole numbered news items, bullets,
-  headings, or paragraphs are kept together across Telegram messages whenever
-  an individual item fits.
-- Dedicated `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` setting (default 90 seconds)
-  for large merged folder requests.
-- One-turn citation repair after a combined answer omits exact source links or
-  invents Telegram URLs; subsequent candidates receive the rejected answer and
-  correction instruction.
-- Final-record credential redaction for configured secrets, Telegram/legacy-provider
-  tokens, Authorization values, query credentials, and traceback text.
-- `scripts/scrub_logs.py` for safe in-place cleanup of historical text logs.
-- Folder-wide `combined` mode: merge selected histories from all folder dialogs
-  and execute one arbitrary LLM operation over the combined context.
-- Original-post permalinks in combined history and output validation that
-  requires real source URLs and rejects invented Telegram links.
-- Calendar `yesterday` period and “каждое утро” daily-schedule recognition.
-- Persistent `folder_mode` in the schedule SQLite schema with additive
-  migration for existing databases.
-- Canonical agent guide in `docs/AI_DEVELOPMENT.md`.
-- Machine-readable parser-command and schedule-record schemas.
-- Repository contract tests that compare code, schemas, SQLite columns,
-  documented commands, `env.example`, and Docker runtime modules.
+- Official Sign in with ChatGPT OAuth authorization through
+  `scripts/chatgpt_auth.py`: dynamic client registration, loopback callback,
+  PKCE/state/nonce, ID-token validation, required plan scope, and owner-only
+  atomic credential storage.
+- `chatgpt_runtime.py` with serialized rotating-token refresh, account-specific
+  model discovery, `auto` model selection, Responses payload conversion, SSE
+  parsing, and mandatory `response.completed` enforcement.
+- `/models` and the simplified `/setmodel <slug|auto>` command.
+- Docker persistence for `/data/chatgpt_credentials.json`.
+- Tests for OAuth credentials, refresh rotation, model discovery, preview-safe
+  Responses fields, returning-account and deployment-host validation, streaming
+  completion/failure, and bot retry behavior.
+- Folder-wide combined analysis, original-post citation validation, authoritative
+  source manifests, semantic Telegram message splitting, and persistent schedules.
 
 ### Changed
 
-- Yandex Cloud DeepSeek (`deepseek-v4.1-flash`) is now the source default primary
-  model; production model order is configured separately through `.env`.
-- Russian-language dates written literally in source history are now accepted
-  by summary grounding checks, in addition to dates derived from timestamps and
-  URL paths.
-- Telegram-link hallucination checks now compare against every URL present in
-  the supplied history rather than only canonical `Оригинал` markers; duplicate
-  URLs remain valid and are ignored by set-based validation.
-- Date validation now normalizes `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/`
-  source-URL paths, preventing grounded verbalized dates from being rejected.
-- Rebuilt all documentation from current code behavior, including folders,
-  unread boundaries, explicit mark-as-read, schedules, one-request model
-  overrides, provider differences, persistence, and privacy.
-- `setup.sh` is non-interactive, validates Python 3.11-3.13, repairs unhealthy
-  environments, reuses a healthy venv when no compatible system Python is on
-  `PATH`, supports `--dev` and `--recreate`, and preserves `.env`.
-- `start.sh` validates interpreter compatibility and runtime imports before
-  launching with `exec`.
-- Runtime/dev dependencies now have compatibility upper bounds.
-- Docker build compiles every runtime module.
-- Compose declares explicit build configuration, init handling, graceful stop,
-  environment mapping, and writable `.env`.
-- Coverage now includes `schedule_runtime`.
+- ChatGPT Plus/Pro plan usage is now the only LLM route.
+- All inference uses the public `POST /v1/responses` endpoint with `store=false`
+  and `stream=true`; preview-unsupported output/token sampling fields are omitted.
+- `CHATGPT_MODEL=auto` selects the first visible account model; exact per-request
+  slugs remain supported.
+- Incomplete output is retried with one full compact-rewrite instruction and is
+  never delivered or followed by mark-as-read.
+- Persisted Yandex/OpenRouter model overrides are cleared automatically while
+  preserving the rest of each schedule, so existing jobs use the ChatGPT
+  default after migration.
+- Documentation, schemas, env inventory, Docker contracts, and tests now describe
+  the subscription-only architecture.
 
-### Fixed
+### Security
 
-- HTTP client INFO logs no longer expose Telegram Bot API tokens embedded in
-  request URLs; runtime `/settoken` values are registered for redaction.
-- “Вчера” now means the previous local calendar day; rolling 24 hours remains
-  available through “за сутки”.
-- Explicit mark-as-read no longer acknowledges chats when LLM analysis fails or
-  every candidate response is rejected.
-- Existing but broken `venv/` directories no longer pass setup/start checks.
-- Removed documentation claims that Telethon sessions should be assumed
-  encrypted or that chat content is never stored locally despite full LLM
-  traffic logging.
+- OAuth tokens live only in the protected credential JSON and request headers.
+- Credential files are ignored by Git and must not be pasted into chats, logs,
+  `.env`, issues, or source control.
+- HTTP-client INFO logs remain suppressed; historical logs can be sanitized with
+  `scripts/scrub_logs.py`.
 
 ## 1.2.0 - 2026-03-06
 
 ### Changed
 
-- Removed the previous provider-specific LLM integration.
-- Moved LLM calls to OpenAI-compatible Chat Completions.
-- Added mutable URL, token, and model configuration.
+- Replaced the original provider-specific integration with OpenAI-compatible
+  Chat Completions and mutable URL/token/model configuration.
 
 ### Added
 
-- `/llmconfig`
-- `/seturl`
-- `/settoken`
-- `/setmodel`
+- Runtime LLM configuration commands.
 - Initial automated tests and coverage configuration.
 
 ## 1.0.0 - 2025-12-10
@@ -110,11 +71,9 @@ behavior is defined by code and tests.
 
 - Initial single-admin Telegram chat analyzer.
 - Telegram Bot API control plane and Telethon user client.
-- Natural-language chat parsing and LLM analysis.
+- Natural-language parsing and LLM analysis.
 - Days, hours, today, and last-N-message selection.
-- Fuzzy chat search.
-- In-memory target/period context.
-- `.env` credential loading and Telethon session persistence.
+- Fuzzy chat search and in-memory target/period context.
 
 ## Reporting changes
 
@@ -122,4 +81,5 @@ Repository: [kab7/llmbot](https://github.com/kab7/llmbot).
 
 Bug reports should include sanitized reproduction steps, expected and actual
 behavior, Python version, deployment mode, and safe log excerpts. Never attach
-`.env`, Telegram sessions, schedule databases, or raw `llm_traffic.log`.
+`.env`, ChatGPT OAuth credentials, Telegram sessions, schedule databases, or
+raw `llm_traffic.log`.

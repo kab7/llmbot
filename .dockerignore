@@ -6,6 +6,8 @@ __pycache__
 *.pyc
 venv
 .env
+chatgpt_credentials*.json
+.chatgpt_credentials*.json.tmp
 *.log
 *.session
 *.session-journal

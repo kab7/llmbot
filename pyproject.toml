@@ -6,8 +6,8 @@ pythonpath = ["."]
 [tool.coverage.run]
 source = [
   "bot",
+  "chatgpt_runtime",
   "config",
-  "llm_runtime",
   "schedule_runtime",
 ]
 

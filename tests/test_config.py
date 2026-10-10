@@ -8,27 +8,17 @@ def _reload_config():
 
 
 def test_config_reads_environment(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setenv("TELEGRAM_API_ID", "123")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
     monkeypatch.setenv("TELEGRAM_PHONE", "+79991234567")
     monkeypatch.setenv("ADMIN_USER_ID", "77")
-    monkeypatch.setenv("PRIMARY_LLM_URL", "https://example.ai/v1/chat/completions")
-    monkeypatch.setenv("PRIMARY_LLM_MODEL", "provider/test-model")
-    monkeypatch.setenv("PRIMARY_LLM_API_KEY", "primary-key")
-    monkeypatch.setenv("FALLBACK_LLM_URL", "https://fallback.ai/v1")
-    monkeypatch.setenv("FALLBACK_LLM_MODEL", "provider/fallback-model")
-    monkeypatch.setenv("FALLBACK_LLM_TOKEN", "fallback-token")
+    monkeypatch.setenv("CHATGPT_CREDENTIALS_FILE", "/data/oauth.json")
+    monkeypatch.setenv("CHATGPT_MODEL", "gpt-test")
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "17")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "71")
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
-    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "3072")
-    monkeypatch.setenv("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", "5")
-    monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", "13")
-    monkeypatch.setenv("PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", "3")
-    monkeypatch.setenv("FALLBACK_FREE_MODEL_INTERVAL_SECONDS", "6")
-    monkeypatch.setenv("FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", "14")
-    monkeypatch.setenv("FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS", "2")
 
     cfg = _reload_config()
 
@@ -37,46 +27,28 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.TELEGRAM_API_HASH == "hash"
     assert cfg.TELEGRAM_PHONE == "+79991234567"
     assert cfg.ADMIN_USER_ID == 77
-    assert cfg.DEFAULT_LLM_URL == "https://example.ai/v1/chat/completions"
-    assert cfg.DEFAULT_LLM_MODEL == "provider/test-model"
-    assert cfg.DEFAULT_LLM_TOKEN == "primary-key"
-    assert cfg.DEFAULT_FALLBACK_LLM_URL == "https://fallback.ai/v1"
-    assert cfg.DEFAULT_FALLBACK_LLM_MODEL == "provider/fallback-model"
-    assert cfg.DEFAULT_FALLBACK_LLM_TOKEN == "fallback-token"
+    assert cfg.CHATGPT_CREDENTIALS_FILE == "/data/oauth.json"
+    assert cfg.CHATGPT_MODEL == "gpt-test"
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 17
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 71
     assert cfg.LLM_MAX_RETRIES == 4
-    assert cfg.LLM_MAX_OUTPUT_TOKENS == 3072
-    assert cfg.PRIMARY_FREE_MODEL_INTERVAL_SECONDS == 5
-    assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS == 13
-    assert cfg.PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS == 3
-    assert cfg.FALLBACK_FREE_MODEL_INTERVAL_SECONDS == 6
-    assert cfg.FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS == 14
-    assert cfg.FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS == 2
-    assert cfg.DEFAULT_LLM_URL.endswith("/chat/completions")
     assert "валидным JSON" in cfg.PARSER_PROMPT
     assert "историей Telegram чатов" in cfg.PROCESSOR_PROMPT
 
 
-def test_config_default_primary_token_empty(monkeypatch):
-    monkeypatch.delenv("PRIMARY_LLM_API_KEY", raising=False)
-    cfg = _reload_config()
-    assert isinstance(cfg.DEFAULT_LLM_TOKEN, str)
-
-
-def test_config_default_primary_model_is_deepseek(monkeypatch):
+def test_config_defaults_to_auto_chatgpt_model(monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
-    monkeypatch.delenv("PRIMARY_LLM_MODEL", raising=False)
+    monkeypatch.delenv("CHATGPT_MODEL", raising=False)
+    monkeypatch.delenv("CHATGPT_CREDENTIALS_FILE", raising=False)
 
     cfg = _reload_config()
 
-    assert (
-        cfg.DEFAULT_LLM_MODEL
-        == "gpt://your_folder_id/deepseek-v4.1-flash/latest"
-    )
+    assert cfg.CHATGPT_MODEL == "auto"
+    assert cfg.CHATGPT_CREDENTIALS_FILE == "chatgpt_credentials.json"
 
 
 def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "120")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "30")
 
@@ -86,30 +58,28 @@ def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 120
 
 
-def test_max_output_tokens_has_safe_minimum(monkeypatch):
-    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "10")
-
-    cfg = _reload_config()
-
-    assert cfg.LLM_MAX_OUTPUT_TOKENS == 256
-
-
-def test_config_get_config_issues_ok_and_optional(monkeypatch):
+def test_config_get_config_issues_ok_and_missing_credentials(monkeypatch, tmp_path):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     monkeypatch.setenv("TELEGRAM_API_ID", "123")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
     monkeypatch.setenv("TELEGRAM_PHONE", "+79991234567")
     monkeypatch.setenv("ADMIN_USER_ID", "77")
-    monkeypatch.setenv("PRIMARY_LLM_API_KEY", "")
-    monkeypatch.setenv("FALLBACK_LLM_TOKEN", "")
+    credentials = tmp_path / "credentials.json"
+    monkeypatch.setenv("CHATGPT_CREDENTIALS_FILE", str(credentials))
 
     cfg = _reload_config()
     required, optional = cfg.get_config_issues()
     assert required == []
-    assert optional and optional[0][0] == "PRIMARY_LLM_API_KEY/FALLBACK_LLM_TOKEN"
+    assert optional and optional[0][0] == "CHATGPT_CREDENTIALS_FILE"
+
+    credentials.write_text("{}", encoding="utf-8")
+    _, optional = cfg.get_config_issues()
+    assert optional == []
 
 
 def test_config_get_config_issues_missing_and_invalid_ints(monkeypatch):
+    monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("TELEGRAM_API_ID", "not-number")
     monkeypatch.setenv("TELEGRAM_API_HASH", "")

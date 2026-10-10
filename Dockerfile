@@ -9,8 +9,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py config.py llm_runtime.py schedule_runtime.py ./
+COPY bot.py chatgpt_runtime.py config.py schedule_runtime.py ./
 
-RUN python -m compileall -q bot.py config.py llm_runtime.py schedule_runtime.py
+RUN python -m compileall -q bot.py chatgpt_runtime.py config.py schedule_runtime.py
 
 CMD ["python", "bot.py"]

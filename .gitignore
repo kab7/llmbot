@@ -1,4 +1,6 @@
 .env
+chatgpt_credentials.json
+chatgpt_credentials*.json
 *.session
 *.session-journal
 __pycache__/

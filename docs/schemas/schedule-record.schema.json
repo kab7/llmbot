@@ -67,7 +67,7 @@
     },
     "requested_model": {
       "type": ["string", "null"],
-      "description": "Persisted exact model identifier or deepseek alias for scheduled analysis."
+      "description": "Persisted exact ChatGPT model slug for scheduled analysis; null uses CHATGPT_MODEL."
     },
     "mark_as_read": {
       "type": "boolean"

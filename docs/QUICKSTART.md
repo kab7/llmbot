@@ -1,32 +1,17 @@
 # Quick start
 
-This file mirrors the current startup and command paths in the code.
-
-## 1. Clone and install
-
-Use Python 3.11-3.13:
+## 1. Install
 
 ```bash
 git clone https://github.com/kab7/llmbot.git
 cd llmbot
 ./setup.sh --dev
+cp env.example .env
 ```
 
-Useful setup options:
+Supported Python: 3.11-3.13.
 
-```bash
-./setup.sh --recreate       # force a clean venv
-./setup.sh --dev --recreate # clean venv with test dependencies
-PYTHON_BIN=python3.12 ./setup.sh --dev
-```
-
-The script automatically rebuilds a missing, broken, or unsupported `venv`.
-
-## 2. Configure `.env`
-
-`setup.sh` copies `env.example` only if `.env` does not already exist.
-
-Required:
+## 2. Configure Telegram and paths
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=...
@@ -34,73 +19,65 @@ TELEGRAM_API_ID=...
 TELEGRAM_API_HASH=...
 TELEGRAM_PHONE=+79991234567
 ADMIN_USER_ID=...
+CHATGPT_CREDENTIALS_FILE=chatgpt_credentials.json
+CHATGPT_MODEL=auto
 ```
 
-Configure at least one LLM token:
+See `env.example` for timeouts, logging, and data paths.
 
-```dotenv
-PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-PRIMARY_LLM_MODEL=gpt://<folder_id>/deepseek-v4.1-flash/latest
-PRIMARY_LLM_API_KEY=<yandex_api_key>
+## 3. Authorize ChatGPT Plus/Pro
 
-FALLBACK_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-FALLBACK_LLM_MODEL=gpt://<folder_id>/aliceai-llm/latest
-FALLBACK_LLM_TOKEN=
+Run on a machine with a browser:
+
+```bash
+venv/bin/python scripts/chatgpt_auth.py
 ```
 
-An empty `FALLBACK_LLM_TOKEN` disables fallback scope. If the variable is absent,
-the startup value of `PRIMARY_LLM_API_KEY` is copied once; later
-`/settoken primary` changes do not update that copy. Set the fallback token
-explicitly when authenticated fallback is required. See `env.example` for retry,
-pacing, logging, and data-path settings.
+Approve `Continue with ChatGPT`. The script writes a renewable
+`chatgpt_credentials.json` with permission mode `0600`. Do not copy token
+values from that JSON into `.env`, Telegram, or a chat.
 
-## 3. Start
+For Docker on a remote server, transfer the complete protected file:
+
+```bash
+scp chatgpt_credentials.json root@SERVER:/data/srv/data/llmbot/chatgpt_credentials.json
+ssh root@SERVER chmod 600 /data/srv/data/llmbot/chatgpt_credentials.json
+```
+
+Treat that generated credential file and its stored host ID as belonging to the
+server deployment; do not run a second local bot instance from the same file.
+
+The container uses `CHATGPT_CREDENTIALS_FILE=/data/chatgpt_credentials.json`
+and refreshes the OAuth session automatically.
+
+## 4. Start
 
 ```bash
 ./start.sh
 ```
 
-`start.sh` refuses to launch when `venv` is missing, broken, outside Python
-3.11-3.13, or lacks runtime imports. Repair it with `./setup.sh`.
+First Telethon startup may request a Telegram login code. Later starts reuse the
+session file.
 
-On first Telethon authorization, enter the Telegram login code and optional 2FA
-password. Preserve the generated session file.
+## 5. Verify
 
-## 4. Verify Telegram behavior
-
-Send:
+In Telegram:
 
 ```text
-/start
+/llmconfig
+/models
 /folders
-Суммаризируй чат Работа за неделю
-О чем договорились?
-/context
+Сделай одну общую сводку папки news за вчера
 ```
 
-Folder and unread examples:
+Expected:
 
-```text
-Суммаризируй непрочитанные в папке AI
-В папке news за вчера найти все упоминания складов WB
-Сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными
-Суммаризируй непрочитанные в чате Поддержка и отметь как прочитанные
-```
+- `/llmconfig` says the ChatGPT OAuth session is connected;
+- `/models` returns slugs visible to the signed-in account;
+- the analysis response ends with the actual model slug;
+- combined folder results cite original Telegram posts when links are available.
 
-The first folder request uses the default per-chat mode. The next two merge all
-selected folder histories into one LLM context and return one answer with links
-to original posts.
-
-Schedule example:
-
-```text
-Суммаризируй папку AI каждый день в 20:00
-Каждое утро в 10:00 сделай топ-10 новостей по всем каналам из папки news за вчера
-/schedules
-/delschedule <id>
-```
-
-## 5. Command inventory
+## 6. Commands
 
 - `/start`
 - `/help`
@@ -108,26 +85,18 @@ Schedule example:
 - `/context`
 - `/reset`
 - `/llmconfig`
-- `/seturl [primary|fallback] <url>`
-- `/setmodel primary|fallback <model[,model2,...]>`
-- `/settoken [primary|fallback] <token>`
+- `/models`
+- `/setmodel <slug|auto>`
 - `/schedules`
 - `/delschedule <id>`
 
-`/seturl`, `/setmodel`, and `/settoken` persist changes to `.env`.
+`/setmodel` persists `CHATGPT_MODEL` to `.env`. OAuth credentials are never
+accepted through a bot command.
 
-## 6. Run tests
+## 7. Tests
 
 ```bash
 venv/bin/python -m pytest
 ```
 
-The suite includes command/schema/documentation contracts in addition to unit
-tests for LLM behavior, Telethon selection, folders, unread state, and schedules.
-
-Next:
-
-- [Installation and recovery](INSTALL.md)
-- [Examples](EXAMPLES.md)
-- [FAQ](FAQ.md)
-- [AI development guide](AI_DEVELOPMENT.md)
+For architecture and invariants, read [AI_DEVELOPMENT.md](AI_DEVELOPMENT.md).

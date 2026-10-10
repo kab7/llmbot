@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -42,27 +44,6 @@ COMBINED_LLM_REQUEST_TIMEOUT_SECONDS = max(
     _parse_int_env("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", 90),
 )
 LLM_MAX_RETRIES = max(1, _parse_int_env("LLM_MAX_RETRIES", 3))
-LLM_MAX_OUTPUT_TOKENS = max(
-    256, _parse_int_env("LLM_MAX_OUTPUT_TOKENS", 4096)
-)
-PRIMARY_FREE_MODEL_INTERVAL_SECONDS = max(
-    0, _parse_int_env("PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
-)
-PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS = max(
-    0, _parse_int_env("PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
-)
-PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS = max(
-    0, _parse_int_env("PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
-)
-FALLBACK_FREE_MODEL_INTERVAL_SECONDS = max(
-    0, _parse_int_env("FALLBACK_FREE_MODEL_INTERVAL_SECONDS", 4)
-)
-FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS = max(
-    0, _parse_int_env("FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", 12)
-)
-FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS = max(
-    0, _parse_int_env("FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
-)
 LOG_FILE_PATH = (os.getenv("LOG_FILE_PATH") or "bot.log").strip() or "bot.log"
 LOG_MAX_BYTES = max(1024 * 1024, _parse_int_env("LOG_MAX_BYTES", 5 * 1024 * 1024))
 LOG_BACKUP_COUNT = max(1, _parse_int_env("LOG_BACKUP_COUNT", 5))
@@ -74,26 +55,12 @@ LLM_TRAFFIC_LOG_MAX_BYTES = max(
 )
 LLM_TRAFFIC_LOG_BACKUP_COUNT = max(1, _parse_int_env("LLM_TRAFFIC_LOG_BACKUP_COUNT", 5))
 
-# LLM настройки по умолчанию (Yandex Cloud OpenAI-compatible API)
-# Можно переопределить через команды /seturl /settoken /setmodel во время работы бота.
-# PRIMARY_LLM_* - основной namespace переменных.
-DEFAULT_LLM_URL = (
-    os.getenv("PRIMARY_LLM_URL")
-    or "https://ai.api.cloud.yandex.net/v1/chat/completions"
-)
-DEFAULT_LLM_MODEL = (
-    os.getenv("PRIMARY_LLM_MODEL")
-    or "gpt://your_folder_id/deepseek-v4.1-flash/latest"
-)
-DEFAULT_LLM_TOKEN = os.getenv("PRIMARY_LLM_API_KEY", "")
-DEFAULT_FALLBACK_LLM_URL = (
-    os.getenv("FALLBACK_LLM_URL") or DEFAULT_LLM_URL
-)
-DEFAULT_FALLBACK_LLM_MODEL = (
-    os.getenv("FALLBACK_LLM_MODEL")
-    or "gpt://your_folder_id/aliceai-llm/latest"
-)
-DEFAULT_FALLBACK_LLM_TOKEN = os.getenv("FALLBACK_LLM_TOKEN", DEFAULT_LLM_TOKEN)
+# ChatGPT plan usage. OAuth credentials are stored in a protected JSON file,
+# never in .env and never entered through the Telegram bot.
+CHATGPT_CREDENTIALS_FILE = (
+    os.getenv("CHATGPT_CREDENTIALS_FILE") or "chatgpt_credentials.json"
+).strip()
+CHATGPT_MODEL = (os.getenv("CHATGPT_MODEL") or "auto").strip() or "auto"
 
 REQUIRED_CONFIG_DESCRIPTIONS = {
     "TELEGRAM_BOT_TOKEN": "Telegram Bot Token от @BotFather",
@@ -104,7 +71,10 @@ REQUIRED_CONFIG_DESCRIPTIONS = {
 }
 
 OPTIONAL_CONFIG_DESCRIPTIONS = {
-    "PRIMARY_LLM_API_KEY/FALLBACK_LLM_TOKEN": "Опционально: токен LLM (минимум для одной из моделей; можно задать позже через /settoken)",
+    "CHATGPT_CREDENTIALS_FILE": (
+        "OAuth credentials для ChatGPT plan usage. Создай их командой "
+        "venv/bin/python scripts/chatgpt_auth.py"
+    ),
 }
 
 
@@ -138,14 +108,11 @@ def get_config_issues() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
             ("ADMIN_USER_ID", REQUIRED_CONFIG_DESCRIPTIONS["ADMIN_USER_ID"])
         )
 
-    if (
-        not (DEFAULT_LLM_TOKEN or "").strip()
-        and not (DEFAULT_FALLBACK_LLM_TOKEN or "").strip()
-    ):
+    if not Path(CHATGPT_CREDENTIALS_FILE).is_file():
         optional_issues.append(
             (
-                "PRIMARY_LLM_API_KEY/FALLBACK_LLM_TOKEN",
-                OPTIONAL_CONFIG_DESCRIPTIONS["PRIMARY_LLM_API_KEY/FALLBACK_LLM_TOKEN"],
+                "CHATGPT_CREDENTIALS_FILE",
+                OPTIONAL_CONFIG_DESCRIPTIONS["CHATGPT_CREDENTIALS_FILE"],
             )
         )
 
@@ -190,10 +157,8 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
    "отметь/пометь как прочитанные", "mark as read", "read all", и т.п. Иначе false.
 7. requested_model:
    - если пользователь явно просит использовать конкретную модель
-     ("с помощью anthropic/claude-opus-4.6", "используй модель ...", "using model ..."),
+     ("с помощью gpt-6.1-sol", "используй модель ...", "using model ..."),
      верни точный идентификатор модели строкой;
-   - для явных алиасов "через deepseek", "через дипсик", "используй DeepSeek"
-     верни строку "deepseek";
    - иначе null.
 
 Период:
@@ -252,13 +217,9 @@ PARSER_PROMPT = """Ты - детерминированный парсер ком
 Ответ:
 {"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI раз в 3 дня в 19:30","requested_model":null,"recurrence_type":"interval_days","interval_days":3,"time":"19:30"}
 
-Пользователь: "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+Пользователь: "суммаризируй папку AI с помощью gpt-6.1-sol"
 Ответ:
-{"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6","requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}
-
-Пользователь: "сделай одну общую сводку папки news за сегодня через дипсик"
-Ответ:
-{"target_type":"folder","target_name":"news","folder_mode":"combined","period_type":"today","period_value":null,"mark_as_read":false,"query":"сделай одну общую сводку папки news за сегодня через дипсик","requested_model":"deepseek","recurrence_type":null,"interval_days":null,"time":null}
+{"target_type":"folder","target_name":"AI","folder_mode":null,"period_type":null,"period_value":null,"mark_as_read":false,"query":"суммаризируй папку AI с помощью gpt-6.1-sol","requested_model":"gpt-6.1-sol","recurrence_type":null,"interval_days":null,"time":null}
 
 Пользователь: "каждое утро в 10:00 сделай одну сводку топ-10 новостей по каналам из папки news за вчера"
 Ответ:

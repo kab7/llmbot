@@ -15,6 +15,6 @@
 - Use `env.example` as the canonical environment-variable inventory.
 - Repair/install the local environment with `./setup.sh --dev`.
 - Run `venv/bin/python -m pytest` with Python 3.11-3.13 before handoff.
-- Do not read, print, or commit `.env`, Telethon session files, SQLite runtime
-  data, or `llm_traffic.log` unless the task explicitly requires inspecting that
-  runtime data.
+- Do not read, print, or commit `.env`, ChatGPT OAuth credentials, Telethon
+  session files, SQLite runtime data, or `llm_traffic.log` unless the task
+  explicitly requires inspecting that runtime data.

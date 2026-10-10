@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -7,875 +6,189 @@ import pytest
 import requests
 
 import bot
-from llm_runtime import LLMRuntimeConfig
+from chatgpt_runtime import (
+    ChatGPTCandidate,
+    ChatGPTCredentialsError,
+    ChatGPTResponse,
+    ChatGPTResponseError,
+)
 
 
-class DummyResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload if payload is not None else {}
-        self.text = text or json.dumps(self._payload, ensure_ascii=False)
+class FakeChatGPTClient:
+    def __init__(self, responses=None, *, configured=True, model="gpt-test"):
+        self.responses = list(responses or [ChatGPTResponse("ok-answer", model)])
+        self.configured = configured
+        self.model = model
+        self.calls = []
+        self.credentials_path = "credentials.json"
 
-    def json(self):
-        return self._payload
+    def is_configured(self):
+        return self.configured
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.exceptions.HTTPError(self.text, response=self)
+    def create_response(self, messages, *, requested_model=None, timeout=90):
+        self.calls.append(
+            {
+                "messages": [dict(message) for message in messages],
+                "requested_model": requested_model,
+                "timeout": timeout,
+            }
+        )
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
-def _set_runtime_token(
-    monkeypatch,
-    token="token-1234567890",
-    model="model/test",
-    fallback_model="provider/fallback",
-):
+def _set_chatgpt_client(monkeypatch, responses=None, **kwargs):
+    client = FakeChatGPTClient(responses=responses, **kwargs)
+    monkeypatch.setattr(bot, "chatgpt_client", client)
     monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
     monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "LLM_MAX_OUTPUT_TOKENS", 4096)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
-    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_INTERVAL_SECONDS", 4)
-    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS", 12)
-    monkeypatch.setattr(bot.config, "FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
-    bot._free_model_next_allowed_at.clear()
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://api.example/v1/chat/completions",
-            token,
-            model,
-            fallback_url="https://fallback.example/v1",
-            fallback_model=fallback_model,
-        ),
-    )
+    return client
 
 
 def test_call_llm_api_success(monkeypatch):
-    _set_runtime_token(monkeypatch)
-    captured = {}
+    client = _set_chatgpt_client(monkeypatch)
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["url"] = url
-        captured["json"] = json
-        captured["headers"] = headers
-        assert timeout == 20
-        return DummyResponse(
-            200,
-            {"choices": [{"message": {"content": "ok-answer"}}]},
-        )
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
     answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
 
     assert answer == "ok-answer"
-    assert captured["url"].endswith("/chat/completions")
-    assert captured["json"]["model"] == "model/test"
-    assert captured["json"]["max_tokens"] == 4096
-    assert captured["headers"]["Authorization"].startswith("Bearer ")
+    assert client.calls[0]["requested_model"] == "gpt-test"
+    assert client.calls[0]["timeout"] == 20
 
 
-def test_call_llm_api_with_meta_success(monkeypatch):
-    _set_runtime_token(monkeypatch)
+def test_call_llm_api_with_meta_uses_actual_model(monkeypatch):
+    _set_chatgpt_client(
+        monkeypatch,
+        responses=[ChatGPTResponse("answer", "gpt-actual")],
+        model="auto",
+    )
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok-answer"}}]})
+    result = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
 
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
-
-    assert answer["content"] == "ok-answer"
-    assert answer["model"] == "model/test"
-    assert answer["url"].startswith("https://api.example/")
+    assert result["content"] == "answer"
+    assert result["model"] == "gpt-actual"
+    assert result["url"] == bot.OPENAI_RESPONSES_URL
+    assert result["scope"] == "chatgpt_subscription"
 
 
 def test_call_llm_api_with_meta_uses_timeout_override(monkeypatch):
-    _set_runtime_token(monkeypatch)
-    captured = {}
+    client = _set_chatgpt_client(monkeypatch)
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["timeout"] = timeout
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
     bot.call_llm_api_with_meta(
-        [{"role": "user", "content": "large combined request"}],
-        request_timeout_seconds_override=90,
+        [{"role": "user", "content": "hi"}],
+        request_timeout_seconds_override=75,
     )
 
-    assert captured["timeout"] == 90
+    assert client.calls[0]["timeout"] == 75
 
 
-def test_call_llm_api_with_meta_uses_actual_model_from_response(monkeypatch):
-    _set_runtime_token(monkeypatch)
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        return DummyResponse(
-            200,
-            {
-                "model": "arcee-ai/trinity-large-preview:free",
-                "choices": [{"message": {"content": "ok-answer"}}],
-            },
-        )
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
-
-    assert answer["content"] == "ok-answer"
-    assert answer["model"] == "arcee-ai/trinity-large-preview:free"
-
-
-def test_call_llm_api_uses_yandex_headers(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://ai.api.cloud.yandex.net/v1",
-            "yandex-api-key",
-            "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest",
-        ),
+def test_call_llm_api_retries_transient_response_failure(monkeypatch):
+    client = _set_chatgpt_client(
+        monkeypatch,
+        responses=[
+            ChatGPTResponseError("upstream", code="server_error", status_code=500),
+            ChatGPTResponse("ok-after-retry", "gpt-test"),
+        ],
     )
-    captured = {}
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        captured["url"] = url
-        captured["json"] = json
-        captured["headers"] = headers
-        return DummyResponse(
-            200,
-            {
-                "model": "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest",
-                "choices": [{"message": {"content": "alice-ok"}}],
-            },
-        )
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
-
-    assert answer["content"] == "alice-ok"
-    assert captured["url"] == "https://ai.api.cloud.yandex.net/v1/chat/completions"
-    assert (
-        captured["headers"]["Authorization"] == "Api-Key yandex-api-key"
-    )
-    assert captured["headers"]["x-folder-id"] == "b1gd80qnnk1gu0ih57vg"
-    assert (
-        captured["json"]["model"]
-        == "gpt://b1gd80qnnk1gu0ih57vg/aliceai-llm/latest"
-    )
-
-
-def test_call_llm_api_rejects_yandex_model_without_folder(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://ai.api.cloud.yandex.net/v1",
-            "yandex-api-key",
-            "aliceai-llm/latest",
-        ),
-    )
-
-    with pytest.raises(
-        Exception, match="Для Yandex Cloud модель должна быть в формате"
-    ):
-        bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-
-def test_call_llm_api_fallback_to_configured_model_on_rate_limit(monkeypatch):
-    _set_runtime_token(monkeypatch)
-    monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
-    seen_models = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"] == "model/test":
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        if json["model"] == "provider/fallback":
-            return DummyResponse(
-                200, {"choices": [{"message": {"content": "ok-fallback"}}]}
-            )
-        return DummyResponse(500, {"error": "unexpected-model"})
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok-fallback"
-    assert seen_models.count("model/test") == 3
-    assert seen_models[-1] == "provider/fallback"
-
-
-def test_call_llm_api_fallback_uses_configured_url_token_and_model(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "primary/model",
-            fallback_url="https://fallback.example/v1",
-            fallback_token="fallback-token-5678",
-            fallback_model="fallback/model",
-        ),
-    )
-    seen_calls = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_calls.append(
-            {
-                "url": url,
-                "model": json["model"],
-                "auth": headers.get("Authorization", ""),
-            }
-        )
-        if "primary.example" in url:
-            return DummyResponse(500, {"error": {"message": "primary failed"}})
-        return DummyResponse(
-            200, {"choices": [{"message": {"content": "fallback-ok"}}]}
-        )
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "fallback-ok"
-    assert seen_calls[0]["url"] == "https://primary.example/v1/chat/completions"
-    assert seen_calls[0]["model"] == "primary/model"
-    assert seen_calls[0]["auth"] == "Bearer primary-token-1234"
-    assert seen_calls[1]["model"] == "primary/model"
-    assert seen_calls[2]["model"] == "primary/model"
-    assert seen_calls[3]["url"] == "https://fallback.example/v1/chat/completions"
-    assert seen_calls[3]["model"] == "fallback/model"
-    assert seen_calls[3]["auth"] == "Bearer fallback-token-5678"
-
-
-def test_call_llm_api_exhausts_free_primary_models_before_paid_fallback(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "free/model-a:free,free/model-b:free",
-            fallback_url="https://fallback.example/v1",
-            fallback_token="fallback-token-5678",
-            fallback_model="paid/model",
-        ),
-    )
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 1)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
-    monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
-    seen_models = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"].endswith(":free"):
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok-paid"}}]})
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok-paid"
-    assert seen_models == [
-        "free/model-a:free",
-        "free/model-b:free",
-        "free/model-a:free",
-        "free/model-b:free",
-        "free/model-a:free",
-        "free/model-b:free",
-        "paid/model",
-    ]
-
-
-def test_call_llm_api_tries_multiple_primary_models_before_sleep(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "primary/model-a,primary/model-b",
-        ),
-    )
-    seen_models = []
     sleeps = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"] == "primary/model-a":
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
     monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(bot.requests, "post", fake_post)
 
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
+    result = bot.call_llm_api_with_meta([{"role": "user", "content": "hi"}])
 
-    assert answer == "ok"
-    assert seen_models == ["primary/model-a", "primary/model-b"]
-    assert sleeps == []
-
-
-def test_call_llm_api_retries_full_model_round_after_sleep(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "primary/model-a,primary/model-b",
-            fallback_url="https://primary.example/v1",
-            fallback_token="primary-token-1234",
-            fallback_model="primary/model-a",
-        ),
-    )
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 10)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 3)
-    seen_models = []
-    sleeps = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if seen_models == ["primary/model-a", "primary/model-b", "primary/model-a"]:
-            return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-        return DummyResponse(429, {"error": {"message": "ratelimit"}})
-
-    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok"
-    assert seen_models == [
-        "primary/model-a",
-        "primary/model-b",
-        "primary/model-a",
-    ]
+    assert result["content"] == "ok-after-retry"
+    assert len(client.calls) == 2
     assert sleeps == [1]
+    assert result["stats"]["gpt-test"]["errors"] == 1
+    assert result["stats"]["gpt-test"]["successes"] == 1
 
 
-def test_call_llm_api_response_validator_tries_next_model_without_sleep(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "primary/model-a,primary/model-b",
-        ),
+def test_call_llm_api_validator_repairs_and_retries(monkeypatch):
+    client = _set_chatgpt_client(
+        monkeypatch,
+        responses=[
+            ChatGPTResponse("bad", "gpt-test"),
+            ChatGPTResponse("good", "gpt-test"),
+        ],
     )
-    seen_models = []
-    sleeps = []
+    monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"] == "primary/model-a":
-            return DummyResponse(200, {"choices": [{"message": {"content": "bad"}}]})
-        return DummyResponse(200, {"choices": [{"message": {"content": "good"}}]})
-
-    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(bot.requests, "post", fake_post)
+    def validator(content, candidate):
+        if content == "bad":
+            return f"bad answer from {candidate.model}"
+        return None
 
     result = bot.call_llm_api_with_meta(
         [{"role": "user", "content": "hi"}],
-        response_validator=lambda content, candidate: (
-            "мусор"
-            if content == "bad"
-            else None
-        ),
+        response_validator=validator,
     )
 
     assert result["content"] == "good"
-    assert seen_models == ["primary/model-a", "primary/model-b"]
-    assert sleeps == []
+    assert len(client.calls) == 2
+    assert result["stats"]["gpt-test"]["rejected"] == 1
 
 
-def test_call_llm_api_content_filter_tries_next_model_without_citation_repair(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "provider/alice,provider/deepseek",
-        ),
-    )
-    seen_models = []
-    validated_contents = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"] == "provider/alice":
-            return DummyResponse(
-                200,
-                {
-                    "choices": [
-                        {
-                            "message": {"content": "Не могу обсуждать эту тему"},
-                            "finish_reason": "content_filter",
-                        }
-                    ]
-                },
-            )
-        return DummyResponse(
-            200,
-            {
-                "choices": [
-                    {"message": {"content": "Саммари со ссылкой"}, "finish_reason": "stop"}
-                ]
-            },
-        )
-
-    def validator(content, candidate):
-        validated_contents.append(content)
-        return None
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    result = bot.call_llm_api_with_meta(
-        [{"role": "user", "content": "hi"}], response_validator=validator
-    )
-
-    assert result["content"] == "Саммари со ссылкой"
-    assert seen_models == ["provider/alice", "provider/deepseek"]
-    assert validated_contents == ["Саммари со ссылкой"]
-    assert result["stats"]["provider/alice"]["rejected"] == 1
-
-
-def test_call_llm_api_rewrites_length_limited_response_compactly(monkeypatch):
-    _set_runtime_token(
+def test_call_llm_api_rewrites_incomplete_response(monkeypatch):
+    messages = [{"role": "user", "content": "Сделай полную сводку"}]
+    client = _set_chatgpt_client(
         monkeypatch,
-        model="provider/deepseek",
-        fallback_model="provider/deepseek",
+        responses=[
+            ChatGPTResponseError(
+                "incomplete",
+                code="max_output_tokens",
+                partial_text="Обрезанный ответ",
+            ),
+            ChatGPTResponse("Краткий завершённый ответ.", "gpt-test"),
+        ],
     )
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 2)
-    payloads = []
+    monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        payloads.append(
-            {
-                "model": json["model"],
-                "messages": [dict(message) for message in json["messages"]],
-            }
-        )
-        if len(payloads) == 1:
-            return DummyResponse(
-                200,
-                {
-                    "choices": [
-                        {
-                            "message": {"content": "Обрезанный ответ"},
-                            "finish_reason": "length",
-                        }
-                    ]
-                },
-            )
-        return DummyResponse(
-            200,
-            {
-                "choices": [
-                    {
-                        "message": {"content": "Краткий завершённый ответ."},
-                        "finish_reason": "stop",
-                    }
-                ]
-            },
-        )
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-    result = bot.call_llm_api_with_meta(
-        [{"role": "user", "content": "Сделай полную сводку"}]
-    )
+    result = bot.call_llm_api_with_meta(messages)
 
     assert result["content"] == "Краткий завершённый ответ."
-    assert len(payloads) == 2
-    assert payloads[1]["messages"][-2] == {
-        "role": "assistant",
-        "content": "Обрезанный ответ",
-    }
-    repair = payloads[1]["messages"][-1]
-    assert repair["role"] == "user"
-    assert "Перепиши ответ заново" in repair["content"]
-    assert "4096 выходных токенов" in repair["content"]
-    assert result["stats"]["provider/deepseek"] == {
-        "requests": 2,
-        "rate_limits": 0,
-        "successes": 1,
-        "rejected": 1,
-        "errors": 0,
-    }
+    assert messages[-2] == {"role": "assistant", "content": "Обрезанный ответ"}
+    assert "Перепиши ответ заново" in messages[-1]["content"]
+    assert result["stats"]["gpt-test"]["rejected"] == 1
 
 
-def test_call_llm_api_never_accepts_empty_length_limited_response(monkeypatch):
-    _set_runtime_token(
+def test_call_llm_api_reports_subscription_limit(monkeypatch):
+    _set_chatgpt_client(
         monkeypatch,
-        model="provider/deepseek",
-        fallback_model="provider/deepseek",
+        responses=[
+            ChatGPTResponseError(
+                "limit",
+                code="subscription_sharing_usage_limit_exceeded",
+            )
+            for _ in range(3)
+        ],
     )
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 1)
-    messages = [{"role": "user", "content": "Сделай полную сводку"}]
-
-    monkeypatch.setattr(
-        bot.requests,
-        "post",
-        lambda *args, **kwargs: DummyResponse(
-            200,
-            {
-                "choices": [
-                    {"message": {"content": ""}, "finish_reason": "length"}
-                ]
-            },
-        ),
-    )
-
-    with pytest.raises(Exception, match="обрезал ответ"):
-        bot.call_llm_api(messages)
-
-    assert len(messages) == 2
-    assert messages[-1]["role"] == "user"
-    assert "полностью закончи ответ" in messages[-1]["content"]
-
-
-def test_build_requested_model_candidates_deepseek_alias_uses_configured_routes(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://ai.api.cloud.yandex.net/v1",
-            "yandex-token",
-            (
-                "gpt://folder/aliceai-llm/latest,"
-                "gpt://folder/deepseek-v32/latest"
-            ),
-            fallback_url="https://ai.api.cloud.yandex.net/v1",
-            fallback_token="fallback-yandex-token",
-            fallback_model="gpt://fallback-folder/deepseek-v4/latest",
-        ),
-    )
-
-    candidates = bot._build_requested_model_candidates("дипсик")
-
-    assert [candidate.model for candidate in candidates] == [
-        "gpt://folder/deepseek-v32/latest",
-        "gpt://fallback-folder/deepseek-v4/latest",
-    ]
-    assert [candidate.scope for candidate in candidates] == ["primary", "fallback"]
-    assert candidates[0].url == "https://ai.api.cloud.yandex.net/v1/chat/completions"
-    assert candidates[1].url == "https://ai.api.cloud.yandex.net/v1/chat/completions"
-
-
-def test_call_llm_api_validation_and_failures(monkeypatch):
-    _set_runtime_token(monkeypatch, token="")
-    try:
-        bot.call_llm_api([{"role": "user", "content": "hi"}])
-        raise AssertionError("expected exception")
-    except Exception as e:  # noqa: BLE001
-        assert "/settoken" in str(e)
-
-    _set_runtime_token(monkeypatch, fallback_model="model/test")
-    monkeypatch.setattr(
-        bot.requests,
-        "post",
-        lambda *args, **kwargs: DummyResponse(200, {"unexpected": "format"}),
-    )
-    try:
-        bot.call_llm_api([{"role": "user", "content": "hi"}])
-        raise AssertionError("expected exception")
-    except Exception as e:  # noqa: BLE001
-        assert "неожиданный формат" in str(e).lower()
-
     monkeypatch.setattr(bot.time, "sleep", lambda *_: None)
-    monkeypatch.setattr(
-        bot.requests,
-        "post",
-        lambda *args, **kwargs: DummyResponse(429, {"error": "ratelimit"}, "ratelimit"),
-    )
-    try:
+
+    with pytest.raises(Exception, match="Лимит подписки ChatGPT"):
         bot.call_llm_api([{"role": "user", "content": "hi"}])
-        raise AssertionError("expected exception")
-    except Exception as e:  # noqa: BLE001
-        assert "Превышен лимит запросов" in str(e)
 
-    def raise_timeout(*args, **kwargs):
-        raise requests.exceptions.Timeout("timeout")
 
-    monkeypatch.setattr(bot.requests, "post", raise_timeout)
-    try:
+def test_call_llm_api_requires_oauth_credentials(monkeypatch):
+    _set_chatgpt_client(monkeypatch, configured=False)
+
+    with pytest.raises(ChatGPTCredentialsError, match="chatgpt_auth.py"):
         bot.call_llm_api([{"role": "user", "content": "hi"}])
-        raise AssertionError("expected exception")
-    except Exception as e:  # noqa: BLE001
-        assert "Timeout LLM API" in str(e)
 
 
-def test_call_llm_api_applies_interval_only_for_free_models(monkeypatch):
-    _set_runtime_token(monkeypatch, model="meta-llama/llama-3.3-70b-instruct:free")
-    seen = {"count": 0}
-    sleeps = []
-    current_time = {"value": 100.0}
-
-    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        current_time["value"] += seconds
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen["count"] += 1
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
-    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    bot.call_llm_api([{"role": "user", "content": "hi"}])
-    bot.call_llm_api([{"role": "user", "content": "hi-again"}])
-
-    assert seen["count"] == 2
-    assert sleeps == [4]
-
-
-def test_call_llm_api_does_not_apply_interval_for_paid_models(monkeypatch):
-    bot._free_model_next_allowed_at.clear()
-    monkeypatch.setattr(bot.config, "LLM_REQUEST_TIMEOUT_SECONDS", 20)
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 4)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 12)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 4)
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://api.example/v1/chat/completions",
-            "token-1234567890",
-            "provider/paid-model",
-        ),
-    )
-    sleeps = []
-
-    monkeypatch.setattr(bot.time, "monotonic", lambda: 100.0)
-    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
-    monkeypatch.setattr(
-        bot.requests,
-        "post",
-        lambda *args, **kwargs: DummyResponse(
-            200, {"choices": [{"message": {"content": "ok"}}]}
-        ),
-    )
-
-    bot.call_llm_api([{"role": "user", "content": "hi"}])
-    bot.call_llm_api([{"role": "user", "content": "hi-again"}])
-
-    assert sleeps == []
-
-
-def test_call_llm_api_free_model_uses_configured_429_backoff(monkeypatch):
-    _set_runtime_token(
+def test_call_llm_api_propagates_credentials_refresh_failure(monkeypatch):
+    _set_chatgpt_client(
         monkeypatch,
-        model="meta-llama/llama-3.3-70b-instruct:free",
-        fallback_model="meta-llama/llama-3.3-70b-instruct:free",
+        responses=[ChatGPTCredentialsError("refresh revoked")],
     )
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 5)
-    sleeps = []
-    current_time = {"value": 50.0}
-    attempts = {"count": 0}
 
-    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        current_time["value"] += seconds
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        attempts["count"] += 1
-        if attempts["count"] == 1:
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
-    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok"
-    assert attempts["count"] == 2
-    assert sleeps == [11]
+    with pytest.raises(Exception, match="refresh revoked"):
+        bot.call_llm_api([{"role": "user", "content": "hi"}])
 
 
-def test_call_llm_api_waits_before_next_free_model_in_same_scope(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "free/model-a:free,free/model-b:free",
-            fallback_model="paid/model",
-        ),
-    )
-    bot._free_model_next_allowed_at.clear()
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
-    current_time = {"value": 10.0}
-    sleeps = []
-    seen_models = []
+def test_build_requested_model_candidate_uses_exact_chatgpt_slug():
+    candidates = bot._build_requested_model_candidates("gpt-specific")
 
-    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        current_time["value"] += seconds
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"] == "free/model-a:free":
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
-    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok"
-    assert seen_models == ["free/model-a:free", "free/model-b:free"]
-    assert sleeps == [11]
-
-
-def test_call_llm_api_sleeps_explicitly_between_free_models_after_429(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "free/model-a:free,free/model-b:free",
-            fallback_url="https://fallback.example/v1",
-            fallback_token="fallback-token-5678",
-            fallback_model="paid/model",
-        ),
-    )
-    bot._free_model_next_allowed_at.clear()
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 3)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 11)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
-    monkeypatch.setattr(bot, "_wait_for_free_model_slot", lambda candidate: None)
-    sleeps = []
-    seen_models = []
-
-    monkeypatch.setattr(bot.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"].endswith(":free"):
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok-paid"}}]})
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok-paid"
-    assert seen_models == [
-        "free/model-a:free",
-        "free/model-b:free",
-        "free/model-a:free",
-        "free/model-b:free",
-        "free/model-a:free",
-        "free/model-b:free",
-        "paid/model",
-    ]
-    assert sleeps == [11, 11, 11, 11, 11]
-
-
-def test_call_llm_api_free_model_uses_growing_429_backoff(monkeypatch):
-    _set_runtime_token(
-        monkeypatch,
-        model="meta-llama/llama-3.3-70b-instruct:free",
-        fallback_model="meta-llama/llama-3.3-70b-instruct:free",
-    )
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 5)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 10)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 3)
-    sleeps = []
-    current_time = {"value": 50.0}
-    attempts = {"count": 0}
-
-    monkeypatch.setattr(bot.time, "monotonic", lambda: current_time["value"])
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        current_time["value"] += seconds
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        attempts["count"] += 1
-        if attempts["count"] < 4:
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok"}}]})
-
-    monkeypatch.setattr(bot.time, "sleep", fake_sleep)
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    answer = bot.call_llm_api([{"role": "user", "content": "hi"}])
-
-    assert answer == "ok"
-    assert attempts["count"] == 4
-    assert sleeps == [10, 13, 16]
-
-
-def test_call_llm_api_next_call_starts_from_primary_after_fallback(monkeypatch):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "free/model-a:free,free/model-b:free",
-            fallback_url="https://fallback.example/v1",
-            fallback_token="fallback-token-5678",
-            fallback_model="paid/model",
-        ),
-    )
-    bot._free_model_next_allowed_at.clear()
-    monkeypatch.setattr(bot.config, "LLM_MAX_RETRIES", 1)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_INTERVAL_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS", 0)
-    monkeypatch.setattr(bot.config, "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS", 0)
-    seen_models = []
-
-    def fake_post(url, json=None, headers=None, timeout=None):
-        seen_models.append(json["model"])
-        if json["model"].endswith(":free"):
-            return DummyResponse(429, {"error": {"message": "ratelimit"}})
-        return DummyResponse(200, {"choices": [{"message": {"content": "ok-paid"}}]})
-
-    monkeypatch.setattr(bot.requests, "post", fake_post)
-
-    first = bot.call_llm_api([{"role": "user", "content": "first"}])
-    second = bot.call_llm_api([{"role": "user", "content": "second"}])
-
-    assert first == "ok-paid"
-    assert second == "ok-paid"
-    assert seen_models == [
-        "free/model-a:free",
-        "free/model-b:free",
-        "paid/model",
-        "free/model-a:free",
-        "free/model-b:free",
-        "paid/model",
-    ]
+    assert candidates == [ChatGPTCandidate(model="gpt-specific")]
 
 
 def test_parse_command_with_gpt(monkeypatch):
@@ -948,17 +261,17 @@ def test_parse_command_with_gpt_requested_model(monkeypatch):
         lambda messages: (
             "```json\n"
             '{"target_type":"folder","target_name":"AI","period_type":null,"period_value":null,'
-            '"mark_as_read":false,"query":"суммаризируй папку AI с помощью anthropic/claude-opus-4.6",'
-            '"requested_model":"anthropic/claude-opus-4.6","recurrence_type":null,"interval_days":null,"time":null}\n'
+            '"mark_as_read":false,"query":"суммаризируй папку AI с помощью gpt-specific",'
+            '"requested_model":"gpt-specific","recurrence_type":null,"interval_days":null,"time":null}\n'
             "```"
         ),
     )
     result = asyncio.run(
         bot.parse_command_with_gpt(
-            "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+            "суммаризируй папку AI с помощью gpt-specific"
         )
     )
-    assert result["requested_model"] == "anthropic/claude-opus-4.6"
+    assert result["requested_model"] == "gpt-specific"
 
 
 def test_process_chat_with_openai(monkeypatch):
@@ -977,7 +290,7 @@ def test_process_chat_with_openai(monkeypatch):
         return {
             "content": "summary",
             "model": "model/test",
-            "url": "https://api.example/v1/chat/completions",
+            "url": bot.OPENAI_RESPONSES_URL,
             "stats": {
                 "model/test": {
                     "requests": 1,
@@ -1031,7 +344,7 @@ def test_process_chat_with_openai_strips_operational_parts_from_summary_query(
         return {
             "content": "summary",
             "model": "model/test",
-            "url": "https://api.example/v1/chat/completions",
+            "url": bot.OPENAI_RESPONSES_URL,
         }
 
     monkeypatch.setattr(bot, "call_llm_api_with_meta", fake_call)
@@ -1068,10 +381,10 @@ def test_process_chat_with_openai_uses_requested_model_override(monkeypatch):
         captured["max_attempts_override"] = max_attempts_override
         return {
             "content": "summary",
-            "model": "anthropic/claude-opus-4.6",
-            "url": "https://api.example/v1/chat/completions",
+            "model": "gpt-specific",
+            "url": bot.OPENAI_RESPONSES_URL,
             "stats": {
-                "anthropic/claude-opus-4.6": {
+                "gpt-specific": {
                     "requests": 1,
                     "rate_limits": 0,
                     "successes": 1,
@@ -1088,14 +401,14 @@ def test_process_chat_with_openai_uses_requested_model_override(monkeypatch):
             "chat history",
             "суммаризируй папку AI",
             "последние 1 день",
-            requested_model="anthropic/claude-opus-4.6",
+            requested_model="gpt-specific",
         )
     )
 
     assert "summary" in result
     assert captured["max_attempts_override"] == 3
     assert len(captured["override"]) == 1
-    assert captured["override"][0].model == "anthropic/claude-opus-4.6"
+    assert captured["override"][0].model == "gpt-specific"
 
 
 def test_process_chat_with_openai_requested_model_failure_has_no_fallback(monkeypatch):
@@ -1119,11 +432,11 @@ def test_process_chat_with_openai_requested_model_failure_has_no_fallback(monkey
             "chat history",
             "суммаризируй папку AI",
             "последние 1 день",
-            requested_model="anthropic/claude-opus-4.6",
+            requested_model="gpt-specific",
         )
     )
 
-    assert "anthropic/claude-opus-4.6" in result
+    assert "gpt-specific" in result
     assert "после 3 попыток" in result
     assert captured["max_attempts_override"] == 3
     assert len(captured["override"]) == 1
@@ -1131,19 +444,6 @@ def test_process_chat_with_openai_requested_model_failure_has_no_fallback(monkey
 
 def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     calls = []
-
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://primary.example/v1",
-            "primary-token-1234",
-            "primary/model",
-            fallback_url="https://fallback.example/v1",
-            fallback_token="fallback-token-5678",
-            fallback_model="fallback/model",
-        ),
-    )
 
     def fake_call(
         messages,
@@ -1155,24 +455,17 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
         calls.append(candidates_override)
         assert response_validator is not None
         bad_content = 'Снижение ручного кодирования,.attr(loading="lazy") и мусор в录入 тексте'
-        assert response_validator(bad_content, SimpleNamespace(model="primary/model"))
+        assert response_validator(bad_content, SimpleNamespace(model="gpt-test"))
         return {
             "content": "Нормальная краткая суммаризация без артефактов.",
-            "model": "fallback/model",
-            "url": "https://fallback.example/v1/chat/completions",
+            "model": "gpt-test",
+            "url": bot.OPENAI_RESPONSES_URL,
             "stats": {
-                "primary/model": {
-                    "requests": 1,
-                    "rate_limits": 0,
-                    "successes": 0,
-                    "rejected": 1,
-                    "errors": 0,
-                },
-                "fallback/model": {
+                "gpt-test": {
                     "requests": 1,
                     "rate_limits": 0,
                     "successes": 1,
-                    "rejected": 0,
+                    "rejected": 1,
                     "errors": 0,
                 },
             },
@@ -1190,8 +483,8 @@ def test_process_chat_with_openai_retries_on_low_quality(monkeypatch):
     assert len(calls) == 1
     assert calls[0] is None
     assert "Нормальная краткая суммаризация" in result
-    assert "Модель: `fallback/model`" in result
-    assert "`primary/model`" in result
+    assert "Модель: `gpt-test`" in result
+    assert "`gpt-test`" in result
     assert "отклонено 1" in result
     assert "тех. ошибок 0" in result
 
@@ -1347,7 +640,7 @@ def test_process_chat_with_openai_does_not_notify_about_429_backoff(monkeypatch)
         return {
             "content": "summary",
             "model": "meta-llama/llama-3.3-70b-instruct:free",
-            "url": "https://api.example/v1/chat/completions",
+            "url": bot.OPENAI_RESPONSES_URL,
             "stats": {
                 "meta-llama/llama-3.3-70b-instruct:free": {
                     "requests": 1,

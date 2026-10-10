@@ -15,7 +15,7 @@ SPEC.loader.exec_module(scrub_logs)
 
 def test_runtime_formatter_redacts_tokens_headers_queries_and_tracebacks():
     telegram_token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"
-    opaque_secret = "opaque-yandex-secret-value"
+    opaque_secret = "opaque-oauth-secret-value"
     bot.register_sensitive_log_value(opaque_secret)
     formatter = bot.RedactingFormatter("%(levelname)s %(message)s")
 
@@ -59,7 +59,7 @@ def test_scrub_logs_loads_env_secrets_and_preserves_nonsecret_text(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(
         "TELEGRAM_BOT_TOKEN=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\n"
-        "PRIMARY_LLM_API_KEY='opaque-primary-secret'\n"
+        "LEGACY_API_KEY='opaque-primary-secret'\n"
         "NORMAL_VALUE=keep-me\n",
         encoding="utf-8",
     )

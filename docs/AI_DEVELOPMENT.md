@@ -6,8 +6,9 @@ user-facing and may omit implementation details.
 
 ## 1. System purpose and boundaries
 
-The project is a single-admin Telegram bot that analyzes Telegram history with an
-OpenAI-compatible chat-completions API.
+The project is a single-admin Telegram bot that analyzes Telegram history with
+ChatGPT Plus/Pro plan usage through the official Sign in with ChatGPT OAuth flow
+and the streaming Responses API.
 
 There are two separate Telegram clients:
 
@@ -24,7 +25,8 @@ The process is intentionally stateful:
 - the last resolved target and period live in the in-memory `current_context`;
 - Telethon authentication lives in the session file;
 - periodic jobs live in SQLite;
-- runtime LLM changes are persisted to `.env`;
+- the selected ChatGPT model is persisted to `.env`;
+- renewable ChatGPT OAuth credentials live in a separate owner-only JSON file;
 - application and full LLM traffic logs are written to rotating files.
 
 The application has no multi-user state model and no database for conversation
@@ -35,15 +37,16 @@ context.
 | Path | Responsibility |
 | --- | --- |
 | `bot.py` | Composition root and most application logic: Telegram handlers, Telethon access, intent guards, history selection, LLM calls, output formatting, and APScheduler integration. |
+| `chatgpt_runtime.py` | ChatGPT OAuth credential loading/refresh, account-specific model discovery, Responses request conversion, SSE parsing, and terminal-event enforcement. |
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
-| `llm_runtime.py` | Mutable primary/fallback LLM settings, URL normalization, model-list normalization, candidate construction, token masking, and Yandex helpers. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
 | `scripts/scrub_logs.py` | Standalone in-place credential redaction for existing text logs; loads secret values from a dotenv file without printing them. |
-| `tests/test_bot_llm_api.py` | LLM retry/fallback, parser, processor, history, unread, and scheduled-job behavior. |
+| `tests/test_bot_llm_api.py` | ChatGPT retries, parser, processor, history, unread, and scheduled-job behavior. |
+| `tests/test_chatgpt_auth.py` | Stable deployment-host identity and returning-account validation for OAuth setup. |
+| `tests/test_chatgpt_runtime.py` | OAuth credential, refresh, model-list, payload, and SSE contracts. |
 | `tests/test_bot_llm_commands.py` | Bot command handlers and top-level message orchestration. |
 | `tests/test_bot_utils.py` | Intent guards, formatting, folders, Telethon helpers, scheduler initialization, and other utilities. |
 | `tests/test_config.py` | Environment loading and configuration validation. |
-| `tests/test_llm_runtime.py` | Runtime LLM configuration contract. |
 | `tests/test_schedule_runtime.py` | Recurrence and SQLite persistence contract. |
 | `tests/test_repository_contracts.py` | Code-derived parser/schedule schemas, SQLite columns, command docs, env inventory, and Docker module inventory. |
 | `env.example` | Canonical list of supported environment variables. |
@@ -53,6 +56,7 @@ context.
 Runtime files are not source files:
 
 - `.env`
+- `chatgpt_credentials.json` (or `CHATGPT_CREDENTIALS_FILE`)
 - `telethon_session.session` (or the path derived from `SESSION_NAME`)
 - `schedules.db` (or `SCHEDULES_FILE`)
 - `bot.log`
@@ -67,8 +71,8 @@ history sent to providers, and provider responses.
 `asyncio.run(main())` owns the process lifecycle:
 
 1. `config.get_config_issues()` validates required Telegram/admin settings.
-   Missing LLM tokens are only a warning because `/settoken` can configure one
-   after startup.
+   A missing ChatGPT credential file is a warning; analysis remains unavailable
+   until the file is generated and the process is restarted.
 2. `init_telethon_client()` connects the user session. Connection and
    authorization checks have explicit startup timeouts.
 3. A `python-telegram-bot` `Application` is created and all handlers are
@@ -79,14 +83,14 @@ history sent to providers, and provider responses.
 
 Configuration is read at import time. Tests that change configuration environment
 variables reload the `config` module. A production `.env` change made outside the
-bot generally requires a restart; `/seturl`, `/setmodel`, and `/settoken` update
-both in-memory settings and `.env`.
+bot generally requires a restart. `/setmodel` updates the in-memory selection and
+`CHATGPT_MODEL` in `.env`; OAuth credentials are never accepted through Telegram.
 
 ## 4. Free-text request pipeline
 
 `process_user_message()` is the main orchestration function:
 
-1. Reject processing if neither primary nor fallback has a token.
+1. Reject processing if a valid ChatGPT OAuth credential record is unavailable.
 2. Parse the original text with `parse_command_with_gpt()`.
 3. Validate types and normalize the JSON with `validate_command_payload()`.
 4. Apply deterministic intent guards to the original text.
@@ -228,116 +232,92 @@ Private channels and supergroups use `t.me/c/<channel_id>/<message_id>`. Legacy
 private `Chat` entities and private user dialogs have no usable message
 permalink.
 
-## 6. LLM runtime contract
+## 6. ChatGPT subscription runtime contract
 
-`LLMRuntimeConfig` owns mutable primary and fallback settings. A comma-separated
-model value creates an ordered model list. Exact duplicate
-`(url, model, token)` candidates are removed.
+The repository has exactly one LLM route: ChatGPT plan usage. There is no
+provider URL setting, API-key setting, primary/fallback scope, or provider
+fallback. The endpoint constants in `chatgpt_runtime.py` are fixed to the public
+OpenAI API and authorization hosts documented for Sign in with ChatGPT.
 
-Without `PRIMARY_LLM_MODEL`, the source default is Yandex Cloud DeepSeek
-`gpt://your_folder_id/deepseek-v4.1-flash/latest` on the Yandex Cloud
-chat-completions endpoint. The fallback source default is Yandex Cloud Alice
-`gpt://your_folder_id/aliceai-llm/latest`. A deployment must replace the
-placeholder folder ID. The first comma-separated primary model is the default
-candidate for parser and analysis calls.
+### Credential lifecycle
 
-At the standalone class level, passing `fallback_token=None` enables dynamic
-inheritance when the primary token changes. The application config normally
-passes a string: an absent `FALLBACK_LLM_TOKEN` copies the primary token value at
-startup, while an explicitly empty variable produces an empty fallback token.
-Neither application path dynamically follows later `/settoken primary` changes.
-Scopes without a token are omitted from the candidate list.
+`scripts/chatgpt_auth.py` performs first-time dynamic client registration and
+OAuth authorization locally:
 
-The normal call order in `_call_llm_api_internal()` is:
+1. generate fresh state, nonce, and PKCE verifier/challenge;
+2. start a loopback callback at `127.0.0.1`;
+3. authorize `dynamic_agent_client` with the stable `ext_agent_host_id`;
+4. exchange the returned code using the issued `client_id`;
+5. validate the ID-token signature, issuer, audience, expiry, and nonce;
+6. on reauthorization, require the validated account subject to match the saved
+   account;
+7. require `chatgpt.tokens.use.direct`;
+8. atomically write the credential record with Unix mode `0600`.
 
-1. run all primary models in order;
-2. repeat the complete primary list for up to `LLM_MAX_RETRIES` rounds;
-3. only after primary is exhausted, do the same for fallback.
+The credential JSON includes access, refresh, and retained ID tokens. Never log,
+print, commit, paste, or store those token values in `.env`. For a remote VM,
+complete the loopback flow on a local computer, keep the generated stable host
+ID assigned to that deployment, and transfer the entire protected file over
+SSH. Docker points `CHATGPT_CREDENTIALS_FILE` at
+`/data/chatgpt_credentials.json`.
+Credential JSON files are excluded from both Git and the Docker build context.
 
-HTTP errors, invalid JSON, unexpected response shape, empty content, and
-validator rejection move to the next candidate. A `429` also moves to the next
-candidate. Free models have separate primary/fallback pacing and growing 429
-backoff, configured by the `*_FREE_MODEL_*` variables.
+`ChatGPTSubscriptionClient.get_access_token()` refreshes within 90 seconds of
+expiry. Refresh uses the issued client ID, rotating refresh token, and
+`resource=https://api.openai.com/v1`, omitting `scope`. Refreshes are
+serialized; the replacement access token, refresh token, expiry, scopes, and
+timestamp are saved together atomically.
 
-Every chat-completions payload sets `max_tokens` from
-`LLM_MAX_OUTPUT_TOKENS` (default `4096`, minimum `256`). This bounds completion
-cost and prevents providers from reserving the entire remaining context window
-when the field is omitted.
+### Models
 
-`_call_llm_api_internal()` accepts a per-call timeout override. It is used by
-combined folder analysis so large merged payloads do not inherit the shorter
-ordinary-request timeout.
+`CHATGPT_MODEL=auto` is the source default. Auto mode calls `GET /v1/models`,
+keeps entries with `visibility == "list"`, preserves server order, and caches the
+first slug for the process lifetime. `/models` shows the account-specific list.
+`/setmodel <slug|auto>` changes the process value and persists
+`CHATGPT_MODEL`. A natural-language `requested_model` is an exact slug used for
+the analysis call only; no provider aliases are recognized.
 
-Candidate stats count requests, 429s, successes, validator rejections, and other
-technical errors. They are aggregated across a folder operation and shown to the
-admin.
+### Responses request
 
-### One-request model override
+`messages_to_responses_payload()` moves system/developer content into
+`instructions` and keeps user/assistant turns in the `input` array. Every
+request sets exactly the required subscription fields:
 
-When `requested_model` is present:
+- `store: false`;
+- `stream: true`;
+- a model available to the signed-in account.
 
-- it is used only for the analysis call, not the parser call;
-- `_resolve_requested_model_override()` deterministically recognizes explicit
-  `через дипсик`, `через deepseek`, and `используй DeepSeek` wording even when
-  the LLM parser omits or mistranslates it;
-- the `deepseek`/Russian alias selects every configured candidate whose model
-  name contains `deepseek`, preserving each candidate's endpoint, token, scope,
-  and primary-before-fallback order while excluding Alice and other models;
-- the primary endpoint/token is preferred, or fallback credentials are used when
-  primary has no token for an explicit non-alias model identifier;
-- an explicit non-alias model identifier is the only candidate and configured
-  fallback is disabled;
-- each selected scope gets up to three retry rounds.
+Do not add preview-unsupported fields such as `max_output_tokens`,
+`temperature`, `top_p`, `metadata`, or `previous_response_id`. Each request
+contains its complete required history.
 
-### Provider differences
+`parse_responses_sse()` accumulates `response.output_text.delta`, handles
+structured failed/incomplete events, and accepts success only after
+`response.completed`. A stream ending without that terminal event is a
+technical failure. A 401 triggers one forced OAuth refresh. Subscription usage
+limit errors can arrive inside a 200 SSE stream and are classified as rate
+limits.
 
-All providers must expose an OpenAI-style chat-completions response with
-`choices[0].message.content`.
+`_call_llm_api_internal()` retries the selected model up to
+`LLM_MAX_RETRIES`. It keeps separate request, rate-limit, success, validator
+rejection, and technical-error counters. A first incomplete response appends the
+partial assistant text when present plus one instruction to rewrite the whole
+answer more compactly; it never delivers partial output. A per-call timeout
+override is used for large combined-folder requests.
 
-`finish_reason=content_filter` or `finish_reason=safety` is classified as a
-provider rejection before the response validator runs. This prevents a safety
-refusal from being mislabeled as a missing citation and prevents citation-repair
-turns from being appended to the next model's request.
-
-`finish_reason=length` or `finish_reason=max_tokens` is never accepted as a
-successful answer, even when content is non-empty. The first such response adds
-one repair turn containing the partial assistant output when available and an
-instruction to rewrite from scratch, preserve the requested format, use shorter
-wording, and finish within `LLM_MAX_OUTPUT_TOKENS`. Subsequent candidates and
-rounds receive that repair context. If none returns a complete answer, the call
-fails and downstream mark-as-read remains disabled.
-
-For `ai.api.cloud.yandex.net`, `_build_llm_headers()` uses
-`Authorization: Api-Key` and derives `x-folder-id` from a model URI shaped like
-`gpt://<folder_id>/<model>`. Other providers use bearer authorization.
-
-### Summary quality checks
+### Summary quality and logging
 
 The processor prompt requires Russian, grounded output. A response validator
-rejects suspicious HTML/code artifacts, unexpected scripts, excessive mixed
-scripts, boilerplate, and dates not supported by the supplied history. Numeric
-dates in both `YYYY-MM-DD` timestamps and `/YYYY/MM/DD/` URL paths are
-normalized to the same calendar date, so a model may safely verbalize a date
-that is present in an original source URL. Russian dates written literally in
-message text are also normalized and accepted; duplicate occurrences are
-irrelevant because validation uses sets. Combined folder calls additionally
-reject missing or invented source links and false leading claims that supplied
-multi-source history contains only one source. They append one repair turn after
-the first repairable rejection, as described above.
-`_cleanup_summary_text()` then removes known presentation artifacts.
+rejects suspicious artifacts and unsupported dates. Combined-folder calls also
+reject missing/invented source links and false claims that a supplied
+multi-source history contains only one source. The first repairable rejection
+adds a focused correction turn.
 
-The complete payload and response are logged to `llm_traffic.log`. Every
-configured handler uses `RedactingFormatter`, which removes registered exact
-secrets and recognizable Telegram/legacy-provider/header/query credential forms from
-the final formatted record, including traceback text. HTTP-client loggers are
-kept at `WARNING` to prevent credential-bearing request URLs from reaching
-handlers in the first place. `/settoken` must register the new value before any
-subsequent logging.
-
-Redaction does not make LLM traffic safe to publish: prompts and responses still
-contain private chat data. Historical text logs can be processed with
-`scripts/scrub_logs.py`; the utility preserves non-secret content and file mode
-and does not print loaded secret values.
+The complete prompt and result are logged to `llm_traffic.log`; therefore that
+file remains sensitive even though authorization/header/query forms are
+redacted and HTTP-client loggers stay at `WARNING`. OAuth tokens are used only
+inside `chatgpt_runtime.py` request headers and are never written to traffic
+logs. Historical text logs can be processed with `scripts/scrub_logs.py`.
 
 ## 7. Scheduling contract
 
@@ -366,7 +346,8 @@ SQLite table `schedules` stores:
 Important behavior:
 
 - `_ensure_schema()` performs the known `requested_model` and `folder_mode`
-  additive migrations;
+  additive migrations and clears model overrides left by the removed provider
+  runtimes without deleting the schedules;
 - all load/modify/save operations in `bot.py` use `schedules_lock`;
 - persistence rewrites the full table in one SQLite transaction;
 - stale `next_run` values are recomputed at startup rather than executed as
@@ -421,8 +402,8 @@ Use `env.example` as the variable inventory. Important path behavior:
 
 - `.env` updates always target `Path(".env")`, relative to the process working
   directory;
-- `LLM_MAX_OUTPUT_TOKENS` controls the `max_tokens` field sent to every model
-  and defaults to `4096`;
+- `CHATGPT_CREDENTIALS_FILE` points to the protected renewable OAuth session;
+- `CHATGPT_MODEL` is `auto` or one exact slug returned by `/models`;
 - `SESSION_NAME`, `SCHEDULES_FILE`, `LOG_FILE_PATH`, and
   `LLM_TRAFFIC_LOG_PATH` may be absolute or working-directory-relative;
 - Docker sets all mutable paths to `/data` and bind-mounts
@@ -446,17 +427,10 @@ python -m pytest
 ```
 
 `pyproject.toml` enables terminal missing-line coverage and enforces 50% across
-all four runtime modules: `bot`, `config`, `llm_runtime`, and
-`schedule_runtime`.
+`bot`, `chatgpt_runtime`, `config`, and `schedule_runtime`.
 
-Last verified on 2026-08-20 with Python 3.12.13:
-
-- 147 tests passed;
-- total configured coverage: 76.36%;
-- `bot.py`: 73%;
-- `config.py`: 100%;
-- `llm_runtime.py`: 100%;
-- `schedule_runtime.py`: 100%.
+Do not hand-edit a verification snapshot here. Report the complete suite result
+from the current change in the handoff.
 
 Update this snapshot only from a complete suite invocation.
 
@@ -492,24 +466,19 @@ it to `/help`, and test authorization plus success/error paths.
 
 ### Change LLM retry behavior
 
-Preserve the distinctions between:
-
-- models within one scope;
-- retry rounds;
-- primary and fallback scopes;
-- free and paid pacing;
-- transport/API failures and validator rejections;
-- configured candidates and one-request model overrides.
+Preserve the distinctions between transport failures, OAuth failures,
+subscription usage limits, incomplete streams, validator rejections, retry
+rounds, and one-request exact-model overrides. Never accept a stream without
+`response.completed`.
 
 The tests in `tests/test_bot_llm_api.py` encode these distinctions explicitly.
 
 ### Change logging
 
 Preserve both controls: network client loggers at `WARNING` and final-record
-redaction on every application handler. Add newly supported runtime credentials
-to `register_sensitive_log_value()` before they can be logged. Test direct
-messages, traceback text, header/query forms, runtime token changes, historical
-scrubbing, and idempotency.
+redaction on every application handler. OAuth credentials must never cross into
+application/traffic log arguments. Test messages, traceback text, header/query
+forms, historical scrubbing, and idempotency.
 
 ### Change folder behavior
 
@@ -527,7 +496,9 @@ muted, archived, legacy Telethon filter results, timeouts, and error wrapping.
 - Only text messages are analyzed.
 - In-memory context is global and cannot safely support multiple admins.
 - Runtime `.env` writes assume a single process and a writable working directory.
+- ChatGPT plan use is subject to the signed-in account's shared subscription
+  limits and current eligible model catalog.
 - Schedule persistence rewrites all records and is designed for a small local
   schedule set, not concurrent multi-process access.
 - Unit tests mock external services; production behavior also depends on Telegram
-  session health, provider compatibility, rate limits, and local timezone.
+  session health, ChatGPT OAuth/session eligibility, shared limits, and timezone.

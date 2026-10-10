@@ -264,13 +264,13 @@ def test_validate_command_payload_schedule_variants():
         "recurrence_type": "daily",
         "interval_days": None,
         "time": "20:00",
-        "requested_model": "anthropic/claude-opus-4.6",
+        "requested_model": "gpt-specific",
     }
     normalized = bot.validate_command_payload(payload)
     assert normalized["recurrence_type"] == "daily"
     assert normalized["time"] == "20:00"
     assert normalized["time_missing"] is False
-    assert normalized["requested_model"] == "anthropic/claude-opus-4.6"
+    assert normalized["requested_model"] == "gpt-specific"
 
     interval_payload = payload | {
         "recurrence_type": "interval_days",
@@ -343,14 +343,9 @@ def test_render_markdownish_to_telegram_html_converts_common_patterns():
     assert '<a href="https://example.com">Ссылка</a>' in out
 
 
-def test_sanitize_url_for_logs_hides_query_and_credentials():
-    masked = bot._sanitize_url_for_logs(
-        "https://user:pass@example.com/v1/chat/completions?api_key=secret&x=1"
-    )
-    assert "secret" not in masked
-    assert "user:pass" not in masked
-    assert "?" not in masked
-    assert masked.startswith("https://example.com/")
+def test_chatgpt_endpoint_is_fixed_and_contains_no_credentials():
+    assert bot.OPENAI_RESPONSES_URL == "https://api.openai.com/v1/responses"
+    assert "?" not in bot.OPENAI_RESPONSES_URL
 
 
 def test_analyze_summary_quality_detects_artifacts_and_dates():
@@ -530,42 +525,25 @@ def test_build_analysis_query_strips_schedule_and_mark_as_read():
 
 
 def test_build_analysis_query_strips_requested_model_clause():
-    query = "суммаризируй папку AI с помощью anthropic/claude-opus-4.6"
+    query = "суммаризируй папку AI с помощью gpt-specific"
     cleaned = bot._build_analysis_query(query)
-    assert "claude-opus-4.6" not in cleaned
+    assert "gpt-specific" not in cleaned
     assert "с помощью" not in cleaned.lower()
     assert cleaned == "суммаризируй папку AI"
 
-    alias_cleaned = bot._build_analysis_query(
-        "сделай общую сводку папки news за сегодня через дипсик"
+    model_cleaned = bot._build_analysis_query(
+        "сделай общую сводку папки news за сегодня через gpt-specific"
     )
-    assert alias_cleaned == "сделай общую сводку папки news за сегодня"
+    assert model_cleaned == "сделай общую сводку папки news за сегодня"
 
 
-def test_resolve_requested_model_override_recognizes_deepseek_alias():
+def test_resolve_requested_model_override_uses_exact_parser_slug():
+    assert bot._resolve_requested_model_override("любой текст", None) is None
     assert (
         bot._resolve_requested_model_override(
-            "Сделай сводку папки news через дипсик", None
+            "Сделай сводку папки news", "gpt-specific"
         )
-        == "deepseek"
-    )
-    assert (
-        bot._resolve_requested_model_override(
-            "Используй модель DeepSeek для папки news", None
-        )
-        == "deepseek"
-    )
-    assert (
-        bot._resolve_requested_model_override(
-            "Сделай сводку через deepseek/deepseek-v3.2", None
-        )
-        == "deepseek/deepseek-v3.2"
-    )
-    assert (
-        bot._resolve_requested_model_override(
-            "Сделай сводку папки news", "configured/model"
-        )
-        == "configured/model"
+        == "gpt-specific"
     )
 
 

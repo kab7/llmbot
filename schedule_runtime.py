@@ -34,6 +34,19 @@ _SCHEDULE_COLUMNS = [
     "day_of_month",
 ]
 
+_LEGACY_PROVIDER_MODEL_ALIASES = {
+    "deepseek",
+    "дипсик",
+    "Дипсик",
+    "ДИПСИК",
+    "дипсика",
+    "Дипсика",
+    "ДИПСИКА",
+    "дипсиком",
+    "Дипсиком",
+    "ДИПСИКОМ",
+}
+
 
 def _open_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -73,6 +86,25 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE schedules ADD COLUMN requested_model TEXT")
     if "folder_mode" not in existing_columns:
         conn.execute("ALTER TABLE schedules ADD COLUMN folder_mode TEXT")
+
+    # Model overrides persisted by the removed Yandex/OpenRouter runtime cannot
+    # be sent to the ChatGPT plan endpoint. Preserve the schedule itself and
+    # let it use the current configured ChatGPT model instead.
+    placeholders = ", ".join("?" for _ in _LEGACY_PROVIDER_MODEL_ALIASES)
+    conn.execute(
+        f"""
+        UPDATE schedules
+        SET requested_model = NULL
+        WHERE requested_model IS NOT NULL
+          AND (
+            trim(requested_model) IN ({placeholders})
+            OR lower(trim(requested_model)) = 'deepseek'
+            OR lower(trim(requested_model)) LIKE 'gpt://%'
+            OR lower(trim(requested_model)) LIKE 'deepseek/%'
+          )
+        """,
+        tuple(sorted(_LEGACY_PROVIDER_MODEL_ALIASES)),
+    )
 
 
 def _row_to_schedule(row: sqlite3.Row) -> dict[str, Any]:

@@ -46,7 +46,7 @@
     },
     "requested_model": {
       "type": ["string", "null"],
-      "description": "Exact one-request model identifier or the deepseek alias resolved against configured DeepSeek candidates."
+      "description": "Exact ChatGPT model slug for this analysis only; null uses CHATGPT_MODEL."
     },
     "recurrence_type": {
       "type": ["string", "null"],

@@ -20,9 +20,8 @@ EXPECTED_COMMANDS = {
     "context",
     "reset",
     "llmconfig",
-    "seturl",
+    "models",
     "setmodel",
-    "settoken",
     "schedules",
     "delschedule",
 }
@@ -32,22 +31,11 @@ EXPECTED_ENV_KEYS = {
     "TELEGRAM_API_ID",
     "TELEGRAM_API_HASH",
     "TELEGRAM_PHONE",
-    "PRIMARY_LLM_URL",
-    "PRIMARY_LLM_MODEL",
-    "PRIMARY_LLM_API_KEY",
-    "FALLBACK_LLM_URL",
-    "FALLBACK_LLM_MODEL",
-    "FALLBACK_LLM_TOKEN",
+    "CHATGPT_CREDENTIALS_FILE",
+    "CHATGPT_MODEL",
     "LLM_REQUEST_TIMEOUT_SECONDS",
     "COMBINED_LLM_REQUEST_TIMEOUT_SECONDS",
     "LLM_MAX_RETRIES",
-    "LLM_MAX_OUTPUT_TOKENS",
-    "PRIMARY_FREE_MODEL_INTERVAL_SECONDS",
-    "PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS",
-    "PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS",
-    "FALLBACK_FREE_MODEL_INTERVAL_SECONDS",
-    "FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS",
-    "FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS",
     "LOG_FILE_PATH",
     "LOG_MAX_BYTES",
     "LOG_BACKUP_COUNT",
@@ -166,8 +154,19 @@ def test_env_example_is_complete():
 
 def test_dockerfile_copies_every_runtime_module():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    for module in ("bot.py", "config.py", "llm_runtime.py", "schedule_runtime.py"):
+    for module in (
+        "bot.py",
+        "chatgpt_runtime.py",
+        "config.py",
+        "schedule_runtime.py",
+    ):
         assert module in dockerfile
+
+
+def test_oauth_credentials_are_excluded_from_git_and_docker_context():
+    for filename in (".gitignore", ".dockerignore"):
+        patterns = (ROOT / filename).read_text(encoding="utf-8").splitlines()
+        assert "chatgpt_credentials*.json" in patterns
 
 
 def test_internal_markdown_links_resolve():

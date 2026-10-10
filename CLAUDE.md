@@ -18,7 +18,8 @@ Important safety boundaries:
 
 - every Telegram handler must remain admin-only;
 - mark-as-read and recurrence require explicit source-text intent;
-- `.env`, Telethon sessions, schedule data, and logs are runtime secrets/state;
+- `.env`, ChatGPT OAuth credentials, Telethon sessions, schedule data, and logs
+  are runtime secrets/state;
 - `llm_traffic.log` contains full chat history sent to LLM providers;
 - parser/schedule changes must update `docs/schemas/*.json` and repository
   contract tests;

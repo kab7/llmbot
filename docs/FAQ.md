@@ -1,321 +1,141 @@
-# FAQ and operational notes
-
-## Why does `start.sh` say the venv is broken?
-
-It checks all of the following:
-
-- `venv/bin/python` is executable;
-- Python is 3.11-3.13;
-- pip exists;
-- APScheduler, dotenv, requests, python-telegram-bot, and Telethon import.
-
-Repair:
-
-```bash
-./setup.sh --dev --recreate
-```
-
-`setup.sh` also repairs an unhealthy environment without `--recreate`.
+# FAQ
 
 ## Which Python versions are supported?
 
-Python 3.11-3.13. Docker uses 3.12. Other versions are not part of the tested
-contract.
+Python 3.11-3.13. Production uses Python 3.12. Run `./setup.sh --dev` to
+create or repair `venv`.
 
-## Which configuration values are required?
+## Which settings are required?
 
-Startup requires valid:
+Telegram polling requires `TELEGRAM_BOT_TOKEN`, positive `TELEGRAM_API_ID`,
+`TELEGRAM_API_HASH`, `TELEGRAM_PHONE`, and positive `ADMIN_USER_ID`. Analysis
+also requires the protected file named by `CHATGPT_CREDENTIALS_FILE`.
 
-- `TELEGRAM_BOT_TOKEN`;
-- positive `TELEGRAM_API_ID`;
-- `TELEGRAM_API_HASH`;
-- `TELEGRAM_PHONE`;
-- positive `ADMIN_USER_ID`.
+## Can I use my ChatGPT subscription without an API key?
 
-An LLM token is optional at startup because `/settoken` can set one later.
-Analysis requires a primary or fallback token.
+Yes, for an eligible ChatGPT Plus/Pro account. This repository uses the official
+Sign in with ChatGPT OAuth flow and ChatGPT plan usage. It does not use a normal
+OpenAI API key and it has no alternate LLM provider.
 
-## Where do Telegram credentials come from?
-
-- Bot token: BotFather `/newbot`.
-- API ID/hash: `https://my.telegram.org` → API development tools.
-- Admin user ID: the numeric ID of the one allowed Telegram user.
-
-## What targets can be analyzed?
-
-One user dialog, group, supergroup, channel, or a Telegram folder. The Telethon
-account must be able to see the target.
-
-`/folders` shows filters returned by Telegram. Folder processing includes
-explicit/pinned peers and dynamic filter flags, then applies configured
-read/muted/archive exclusions.
-
-## How are folders analyzed?
-
-There are two modes:
-
-- `per_chat` is the default and runs one LLM operation for each matched dialog;
-- `combined` loads all selected histories first and runs one operation over the
-  merged, source-labelled context.
-
-Explicit cross-folder intent selects `combined`, for example a single top-10
-across all channels or finding every mention of a topic in the folder. Explicit
-“separately for each channel” wording selects `per_chat`.
-
-Combined answers cite original post links copied from the history. The validator
-rejects a linkless combined response when linkable source messages exist and
-rejects invented Telegram URLs. Telegram cannot create an original-message
-permalink for a legacy private `Chat`; public channels and private
-channels/supergroups are linkable.
-
-## How does fuzzy matching work?
-
-Matching is case-insensitive and removes emoji:
-
-- exact: 1.0;
-- substring: 0.9;
-- otherwise: `SequenceMatcher`;
-- acceptance threshold: 0.5.
-
-Because 0.5 is permissive, check the bot's visible recognized-command message.
-
-## What periods are supported?
-
-- `days`: last N × 24 hours;
-- `hours`: last N hours;
-- `today`: local midnight through now;
-- `yesterday`: previous local midnight through current local midnight;
-- `last_messages`: latest N messages;
-- `unread`: messages after the known read boundary;
-- omitted: inherited context period or latest 300 messages.
-
-“Вчера” selects the previous calendar day. “За сутки” selects the rolling last
-24 hours.
-
-## Are media and service messages analyzed?
-
-No. `get_chat_history()` includes only messages with non-empty `message.text`.
-Media-only and service events are ignored.
-
-## Does reading history mark messages as read?
-
-No. Read acknowledgement requires explicit wording such as “отметь как
-прочитанные”. A deterministic guard clears an LLM-invented `mark_as_read=true`.
-
-LLM errors are shown to the user but do not acknowledge the selected chat.
-Mark-as-read runs only after successful analysis. The text-empty unread case
-below is the deliberate exception because there is nothing for the LLM to
-analyze.
-
-## How does unread mode work?
-
-For a known zero unread count, the chat is skipped. Otherwise the bot uses the
-dialog unread count as a limit and `read_inbox_max_id` as the lower message-ID
-boundary when Telegram provides it.
-
-If Telegram reports unread messages but they contain no text, an explicit
-mark-as-read request can acknowledge the chat without producing a summary.
-
-## What does context remember?
-
-Only target type/name and period type/value. It does not retain message history,
-questions, or answers. It is global for the single admin and disappears on
-restart.
-
-## How do model lists and fallback work?
-
-Comma-separated models form an ordered list. The bot exhausts all primary models
-for all retry rounds before entering fallback scope. Free models use configured
-pacing and growing 429 backoff.
-
-Duplicate `(URL, model, token)` candidates are removed.
-
-## What does a one-request model override do?
-
-Natural wording such as “используй модель X” sets `requested_model` for the
-analysis call only. The parser still uses configured models. The override is
-tried three times without configured fallback.
-
-For a DeepSeek-only request, use `через дипсик`, `через deepseek`, or
-`используй DeepSeek`. The bot skips Alice and tries only configured DeepSeek
-candidates, keeping their own configured endpoints and normal
-primary/fallback order.
-
-## Why did a model response get rejected?
-
-The response validator rejects known HTML/code artifacts, unexpected scripts,
-excessive mixed-script corruption, boilerplate, and dates absent from selected
-history. The next candidate is then tried. Provider
-`finish_reason=content_filter`/`safety` is recorded directly as a provider
-rejection rather than being mislabeled as a citation failure.
-
-`finish_reason=length`/`max_tokens` means the provider truncated the completion.
-The partial text is never delivered as a successful summary. On the first such
-response, the next attempt is instructed to rewrite the entire result more
-compactly and finish within `LLM_MAX_OUTPUT_TOKENS`. If all candidates remain
-truncated, the bot returns an explicit failure and does not mark chats read.
-
-Dates embedded in original URLs as `/YYYY/MM/DD/` count as source evidence just
-like `YYYY-MM-DD` Telegram history timestamps. A Russian date verbalized from
-such a URL is therefore accepted.
-
-## How does Yandex Cloud configuration differ?
-
-Use a model URI containing the folder:
-
-```dotenv
-PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
-PRIMARY_LLM_API_KEY=...
+```bash
+venv/bin/python scripts/chatgpt_auth.py
 ```
 
-The bot uses `Authorization: Api-Key` and `x-folder-id`.
+Approve `Continue with ChatGPT`. The generated record contains access, refresh,
+and ID tokens. Treat the entire file as a secret.
 
-## How are schedules stored and run?
+## May I paste a token into Telegram or a support chat?
 
-Records are stored in `SCHEDULES_FILE` SQLite. APScheduler receives one-shot date
-jobs; after a successful run the bot computes and registers the next one.
+No. The bot deliberately has no `/settoken` command. Do not paste OAuth tokens
+or the credential JSON into Telegram, Codex/ChatGPT chat, logs, issues, or
+`.env`. Generate the file locally and transfer it over SSH for remote deploys.
 
-Supported recurrence:
+## How does OAuth refresh work?
 
-- daily;
-- weekly, anchored to creation weekday;
-- monthly, anchored to creation day and clamped in shorter months;
-- every N days.
+The bot refreshes shortly before access-token expiry using the issued client ID
+and rotating refresh token. Replacement credentials are saved atomically with
+owner-only permissions. Concurrent refreshes are serialized. If refresh is
+revoked, rerun `scripts/chatgpt_auth.py`, replace the deployed file, and restart.
 
-Uncaught job-level errors retry after 300 seconds. Per-chat errors in a
-`per_chat` folder job are counted as skipped. A combined job skips sources whose
-history cannot be loaded and analyzes the remaining histories in one call. The
-overall job still advances normally.
+## Which model is used?
 
-## Why did an overdue schedule not run at startup?
+`CHATGPT_MODEL=auto` selects the first visible model in the signed-in account's
+catalog. Use `/models`, `/setmodel <slug>`, or `/setmodel auto`. The catalog is
+account/workspace specific. Natural wording such as “используй модель <slug>”
+applies that exact slug to the analysis call only.
 
-Startup recomputes stale `next_run` values. It does not replay missed executions.
+## Are subscription limits separate for the bot?
+
+No. Plan usage is shared with the same ChatGPT account, including ChatGPT,
+Codex, and other authorized apps. A limit error may arrive after streaming has
+begun; the bot treats it as failure and never delivers partial text.
+
+## What targets and periods are supported?
+
+The bot analyzes one chat/channel or a Telegram folder. Folder `per_chat` mode
+runs one result per dialog; `combined` merges source-labelled histories and runs
+one cross-folder operation. Combined mode is selected for a common digest, top-N
+or one search over the folder. Periods: today, yesterday, rolling N hours/days,
+last N messages, unread, or the default latest-message limit.
+
+## Does reading history mark messages read?
+
+No. Mark-as-read requires explicit source wording and runs only after successful
+analysis. A failed, incomplete, or rejected result leaves unread state unchanged.
+
+## How are source links enforced?
+
+Combined history adds canonical markdown links labelled `Оригинал` when Telegram can form a
+permalink. The validator requires a supplied original link when linkable history
+exists and rejects invented Telegram URLs. Public channels use
+`t.me/<username>/<message_id>`; private channels/supergroups may use `t.me/c/...`;
+some legacy chats and private dialogs have no usable permalink.
+
+## Why was a response rejected?
+
+Possible causes include: no terminal `response.completed`, failed/incomplete
+SSE, subscription limits, empty output, suspicious artifacts, unsupported dates,
+missing/invented source links, or a false single-source claim in combined mode.
+The first incomplete response is retried with a full compact rewrite request.
+The subscription route does not accept `max_output_tokens`, so the bot omits it.
+
+## How are long Telegram results split?
+
+The bot prefers whole numbered news items, headings, and bullets. It falls back
+to length splitting only when one semantic item exceeds Telegram's limit.
+
+## How do schedules work?
+
+Natural-language recurrence supports daily, weekly, monthly, and every-N-days
+jobs. SQLite persists combined/per-chat mode, exact model override, period,
+query, and mark-as-read intent. Overrides left by the removed Yandex/OpenRouter
+runtime are cleared automatically and the preserved schedule uses the current
+ChatGPT default. If a newer exact ChatGPT slug is not visible to the account,
+recreate that schedule or switch it to the default model.
 
 ## Where is runtime state stored?
 
-Local defaults:
+- `.env`: paths/settings and Telegram credentials;
+- `chatgpt_credentials.json`: renewable ChatGPT OAuth credentials;
+- Telethon `*.session`: Telegram user authorization;
+- `schedules.db`: recurring jobs;
+- `bot.log`: operations/errors;
+- `llm_traffic.log`: complete LLM prompts and outputs.
 
-- `.env`;
-- `telethon_session.session`;
-- `schedules.db`;
-- `bot.log`;
-- `llm_traffic.log`;
-- in-memory `current_context`.
-
-Docker redirects session, schedule, and log paths to `/data`.
-
-## Are Telethon sessions encrypted?
-
-Do not rely on that assumption. Treat the session file as active Telegram
-authentication material. Anyone who obtains usable session data may gain account
+All are sensitive. The OAuth credential file and Telethon session grant account
 access.
-
-## Are chat contents stored locally?
-
-Selected history is not stored in a dedicated history database, but full LLM
-request payloads and responses are written to `llm_traffic.log`. Schedules also
-store the original query. Both are sensitive.
 
 ## Where are chat contents sent?
 
-To the endpoint and model shown by `/llmconfig`, including fallback candidates
-when used. Provider retention and privacy depend on that external service.
+Selected text is sent to `https://api.openai.com/v1/responses` with
+`store=false` and `stream=true`. Each request contains its required context. The
+bot does not call ChatGPT backend-api endpoints.
 
-## Why is a folder request slow?
+## Why is a combined folder request slow?
 
-Dialogs and histories are enumerated sequentially. In `per_chat` mode each
-selected text history is sent in one LLM request. In `combined` mode all selected
-history text is merged into one potentially large request. Combined analysis
-uses `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (90 seconds by default), while
-ordinary calls use `LLM_REQUEST_TIMEOUT_SECONDS` (20 seconds by default). There
-is no token-aware chunking, so reduce the period or folder size when provider
-context limits are reached.
-
-The outgoing completion budget is always bounded by
-`LLM_MAX_OUTPUT_TOKENS` (4096 by default). Without an explicit `max_tokens`,
-Some providers may price the request as if the model could use the whole
-remaining context window and reject it even when the intended summary is short.
-The cap does not allow partial output: hitting it triggers the compact rewrite
-flow described above.
-
-If an otherwise valid combined answer has no exact original-post link or
-contains an invented Telegram link, it is rejected. The next candidate or retry
-receives that answer plus a citation-repair instruction, so it can correct the
-links instead of repeating the same response. Candidate statistics count the
-first response as `rejected`; provider timeouts and transport failures are
-counted as technical errors.
-
-At least one citation must still come from an `Оригинал` marker. Other Telegram
-links are accepted when they occur anywhere in the supplied history, including
-inside message text. Repeating the same URL is allowed and has no effect on
-validation.
-
-Date grounding follows the same principle: numeric timestamps, dates embedded
-in URL paths, and Russian dates literally present in message text are all valid.
-Repeated dates do not change validation.
-
-Combined history contains a manifest of every successfully loaded source and
-its message count, repeated before and after the source blocks. A leading model
-claim that only one source is present or that all other listed sources are
-absent is rejected as contradicted by that manifest. The retry receives the
-exact source list. This check does not require artificial source diversity: a
-valid top-N result may cite only the channels that contain the selected events.
-
-## What does HTTP 429 handling do?
-
-The current candidate is skipped. Free models reserve a provider/scope pacing
-slot and apply configured backoff. Remaining models are attempted according to
-scope and retry order. Aggregate statistics show requests and 429 counts.
-
-## How are long summaries split into Telegram messages?
-
-The bot keeps top-level numbered news items, bullets, headings, or unnumbered
-paragraphs whole and packs them into messages below Telegram's size limit. It
-falls back to fixed-length splitting only when a single news item is itself too
-large to fit in one message.
+Histories are loaded sequentially and merged into one potentially large request.
+Combined analysis uses `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS`; ordinary calls use
+`LLM_REQUEST_TIMEOUT_SECONDS`. There is no token-aware chunking.
 
 ## How do I inspect logs safely?
 
-- `bot.log`: lifecycle, Telegram operations, errors, model names, statistics.
-- `llm_traffic.log`: complete payloads and responses.
-
-Configured tokens, common credential forms, and traceback occurrences are
-redacted automatically. HTTP-client request logs are suppressed because URLs may
-carry credentials. This does not remove private chat content from
-`llm_traffic.log`.
-
-Scrub historical text logs in place:
+`llm_traffic.log` contains private Telegram history even when credentials are
+redacted. Never publish it raw. To scrub historical token-like values:
 
 ```bash
-python3 scripts/scrub_logs.py --env-file .env /data/bot.log*
+venv/bin/python scripts/scrub_logs.py bot.log llm_traffic.log
 ```
 
-Never attach raw `llm_traffic.log`, `.env`, or session files to a public issue.
-Review and redact chat content, sensitive IDs, and URLs even after token
-scrubbing.
+Review chat content, IDs, links, and names separately before sharing.
 
-## How do I update the bot?
+## How do I update and test?
 
 ```bash
 git pull
 ./setup.sh --dev
 venv/bin/python -m pytest
-./start.sh
+docker-compose build
+docker-compose up -d
 ```
 
-Docker:
-
-```bash
-docker compose up -d --build
-```
-
-The production host currently uses `docker-compose`.
-
-## How do I report a problem?
-
-Repository: [kab7/llmbot](https://github.com/kab7/llmbot).
-
-Include sanitized reproduction steps, expected/actual behavior, Python version,
-deployment mode, and safe excerpts from `bot.log`. Do not include credentials,
-session data, schedule databases, or raw LLM traffic.
+The credential and data volume must survive container recreation.

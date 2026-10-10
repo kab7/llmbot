@@ -9,8 +9,8 @@ llmbot/
 ├── CLAUDE.md
 ├── README.md
 ├── bot.py
+├── chatgpt_runtime.py
 ├── config.py
-├── llm_runtime.py
 ├── schedule_runtime.py
 ├── pyproject.toml
 ├── requirements.txt
@@ -21,6 +21,7 @@ llmbot/
 ├── docker-compose.yml
 ├── env.example
 ├── scripts/
+│   ├── chatgpt_auth.py
 │   └── scrub_logs.py
 ├── docs/
 │   ├── AI_DEVELOPMENT.md
@@ -38,8 +39,9 @@ llmbot/
     ├── test_bot_llm_api.py
     ├── test_bot_llm_commands.py
     ├── test_bot_utils.py
+    ├── test_chatgpt_auth.py
+    ├── test_chatgpt_runtime.py
     ├── test_config.py
-    ├── test_llm_runtime.py
     ├── test_schedule_runtime.py
     ├── test_scrub_logs.py
     └── test_repository_contracts.py
@@ -49,6 +51,7 @@ Ignored runtime files can appear beside source:
 
 ```text
 .env
+chatgpt_credentials*.json
 venv/
 *.session
 schedules.db*
@@ -67,8 +70,7 @@ Composition root and main application module. It contains:
 - rotating log setup;
 - admin authorization decorator;
 - parser normalization and deterministic intent guards;
-- primary/fallback LLM HTTP execution;
-- free-model pacing and 429 backoff;
+- ChatGPT Responses retry/statistics orchestration;
 - summary validation and cleanup;
 - Telethon initialization and reconnect logic;
 - chat and folder lookup;
@@ -101,7 +103,7 @@ Global process state:
 ```text
 telethon_client
 current_context
-llm_runtime
+chatgpt_client
 scheduler
 application_ref
 schedules_lock
@@ -112,8 +114,8 @@ schedules_lock
 Loads `.env` at import time and exposes:
 
 - required Telegram/admin settings;
-- path, logging, timeout, retry, and pacing settings;
-- primary/fallback LLM defaults;
+- path, logging, timeout, and retry settings;
+- ChatGPT credential path and selected model;
 - `get_config_issues()`;
 - `PARSER_PROMPT`;
 - `PROCESSOR_PROMPT`.
@@ -121,20 +123,16 @@ Loads `.env` at import time and exposes:
 Integer environment values use `_parse_int_env()`. Invalid integers fall back to
 the supplied default; required positive IDs then fail startup validation.
 
-### `llm_runtime.py`
+### `chatgpt_runtime.py`
 
 Contains:
 
-- `LLMSettings`;
-- URL validation and chat-completions normalization;
-- comma-separated model normalization;
-- primary/fallback mutable settings;
-- inherited or independent fallback tokens;
-- candidate ordering and deduplication;
-- token masking;
-- Yandex host and folder-ID helpers.
-
-This module does not perform HTTP calls.
+- protected credential loading and atomic rotating-token writes;
+- serialized OAuth refresh;
+- account-specific visible model discovery and `auto` resolution;
+- chat-message to Responses input conversion;
+- public Responses API HTTP/SSE execution;
+- mandatory `response.completed` enforcement and structured errors.
 
 ### `schedule_runtime.py`
 
@@ -158,6 +156,13 @@ Standalone maintenance command for existing text logs. It loads credential
 values from `.env`, combines exact-value and recognizable credential-pattern
 redaction, rewrites changed files atomically, preserves file ownership/mode when
 permitted, and reports only replacement counts.
+
+### `scripts/chatgpt_auth.py`
+
+Interactive local OAuth utility. It implements dynamic client registration,
+loopback callback, PKCE/state/nonce, ID-token validation, required ChatGPT-plan
+scope validation, and owner-only credential output. The generated file is
+runtime state and must never be committed.
 
 ## Application flow
 
@@ -196,9 +201,16 @@ folder_mode=combined
 
 ### `.env`
 
-Loaded by `config.py`. Runtime LLM commands atomically replace this file through
-a temporary sibling file. Paths are relative to the process working directory
-unless configured as absolute.
+Loaded by `config.py`. `/setmodel` atomically updates `CHATGPT_MODEL` through a
+temporary sibling file. OAuth token values never belong in `.env`. Paths are
+relative to the process working directory unless configured as absolute.
+
+### ChatGPT OAuth credentials
+
+`CHATGPT_CREDENTIALS_FILE` points to the renewable Sign in with ChatGPT session.
+`scripts/chatgpt_auth.py` creates it with owner-only permissions;
+`chatgpt_runtime.py` atomically rotates it on refresh. It grants plan usage and
+must be protected like the Telethon session.
 
 ### Telethon session
 
@@ -252,11 +264,12 @@ No Python package/wheel is built; the project runs directly from source files.
 
 | File | Contract |
 | --- | --- |
-| `test_bot_llm_api.py` | HTTP candidates, fallback, pacing, parser, processor, history, unread, scheduled failure. |
+| `test_bot_llm_api.py` | ChatGPT retry/stats, parser, processor, history, unread, scheduled failure. |
 | `test_bot_llm_commands.py` | Runtime commands and top-level user-message orchestration. |
 | `test_bot_utils.py` | Guards, formatting, matching, folders, Telethon helpers, scheduler initialization. |
+| `test_chatgpt_auth.py` | Stable deployment-host identity and returning-account OAuth validation. |
+| `test_chatgpt_runtime.py` | OAuth credentials/refresh, model catalog, payload conversion, and SSE completion. |
 | `test_config.py` | Environment parsing and required/optional validation. |
-| `test_llm_runtime.py` | Mutable model settings and provider helpers. |
 | `test_schedule_runtime.py` | Recurrence calculations and SQLite persistence. |
 | `test_scrub_logs.py` | Runtime formatter redaction, HTTP logger levels, historical scrubbing, and idempotency. |
 | `test_repository_contracts.py` | Code-to-schema, command documentation, env inventory, SQLite columns, Docker module inventory. |

@@ -104,10 +104,21 @@ Required startup variables:
 | `TELEGRAM_API_HASH` | API hash from my.telegram.org. |
 | `TELEGRAM_PHONE` | Phone number for Telethon login. |
 | `ADMIN_USER_ID` | Positive Telegram user ID allowed to use the bot. |
+| `CHATGPT_CREDENTIALS_FILE` | Protected Sign in with ChatGPT credential JSON path. |
+| `CHATGPT_MODEL` | `auto` or one exact slug returned by the account model catalog. |
 
-LLM tokens are optional at startup because `/settoken` can set one later, but
-analysis requires at least one of `PRIMARY_LLM_API_KEY` or
-`FALLBACK_LLM_TOKEN`.
+The credential file is optional for process startup but required for parsing or
+analysis. Generate it on a browser-capable machine:
+
+```bash
+venv/bin/python scripts/chatgpt_auth.py
+```
+
+The script validates the OpenAI ID token and ChatGPT plan permission and writes
+the renewable credential record with mode `0600`. Never put access or refresh
+tokens in `.env`, Telegram, source control, logs, or support messages.
+For a remote deployment, authorize locally, securely copy the whole file to the
+remote runtime path, and treat its stable host ID as belonging to that server.
 
 The complete variable inventory and defaults are in `env.example`.
 
@@ -119,6 +130,9 @@ The complete variable inventory and defaults are in `env.example`.
 
 The first Telethon login can require interactive input. Complete it in an
 interactive terminal before relying on an unattended service or container.
+
+Run `/llmconfig` and `/models` after startup to verify the ChatGPT OAuth session
+and the account-specific model catalog.
 
 Generated session files grant Telegram-account access. Back them up securely,
 never commit them, and do not describe them as application-encrypted secrets.
@@ -145,7 +159,8 @@ The Dockerfile:
 
 - starts from `python:3.12-slim`;
 - installs only runtime requirements;
-- copies all four runtime Python modules;
+- copies all four runtime Python modules (`bot`, `chatgpt_runtime`, `config`,
+  and `schedule_runtime`);
 - runs `compileall` during build;
 - starts `python bot.py`.
 
@@ -154,6 +169,7 @@ Compose paths:
 | Container path | Source |
 | --- | --- |
 | `/app/.env` | Repository `.env`, mounted read/write. |
+| `/data/chatgpt_credentials.json` | Host `/data/srv/data/llmbot`; renewable OAuth session. |
 | `/data/telethon_session*` | Host `/data/srv/data/llmbot`. |
 | `/data/schedules.db` | Host `/data/srv/data/llmbot`. |
 | `/data/bot.log` | Host `/data/srv/data/llmbot`. |
@@ -201,6 +217,13 @@ network access is restored.
 Read the missing keys in `bot.log` or console output and update `.env`. Startup
 validation intentionally stops before Telegram polling when required Telegram or
 admin values are invalid.
+
+### ChatGPT OAuth credentials are missing or revoked
+
+Run `venv/bin/python scripts/chatgpt_auth.py` locally. For a remote Docker host,
+copy the complete file to
+`/data/srv/data/llmbot/chatgpt_credentials.json`, set mode `0600`, and restart
+the container. Do not paste an individual token into the bot.
 
 ### First container run cannot authorize Telethon
 

@@ -2,7 +2,6 @@ import asyncio
 from types import SimpleNamespace
 
 import bot
-from llm_runtime import LLMRuntimeConfig
 
 
 class DummyMessage:
@@ -41,20 +40,39 @@ class DummyContext:
 
 
 def _reset_runtime(monkeypatch, env_path):
-    monkeypatch.setattr(
-        bot,
-        "llm_runtime",
-        LLMRuntimeConfig(
-            "https://example.com/api/v1/chat/completions",
-            "token-0000000000",
-            "meta-llama/llama-3.3-70b-instruct:free",
-        ),
-    )
+    class FakeClient:
+        def __init__(self):
+            self.model = "auto"
+            self.credentials_path = "chatgpt_credentials.json"
+
+        def credential_status(self):
+            return {
+                "configured": True,
+                "email": "owner@example.com",
+                "expires_at": "2026-10-11T02:00:00+00:00",
+            }
+
+        def is_configured(self):
+            return True
+
+        def set_model(self, model):
+            if not model or "," in model:
+                raise ValueError("Поддерживается только одна ChatGPT-модель")
+            self.model = model
+            return model
+
+        def list_models(self):
+            return [
+                {"slug": "gpt-a", "display_name": "GPT A"},
+                {"slug": "gpt-b", "display_name": "GPT B"},
+            ]
+
+    monkeypatch.setattr(bot, "chatgpt_client", FakeClient())
     monkeypatch.setattr(bot.config, "ADMIN_USER_ID", 1)
     monkeypatch.setattr(bot, "ENV_FILE", env_path)
 
 
-def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
+def test_setmodel_models_and_show(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     _reset_runtime(monkeypatch, env_path)
     update = DummyUpdate(
@@ -62,76 +80,37 @@ def test_seturl_setmodel_settoken_and_show(monkeypatch, tmp_path):
         text="суммаризируй непрочитанные в папке AI и отметь как прочитанные",
     )
 
-    asyncio.run(bot.seturl_command(update, DummyContext(["https://example.com/v1"])))
-    asyncio.run(
-        bot.seturl_command(
-            update, DummyContext(["fallback", "https://fallback.example/v1"])
-        )
-    )
-    asyncio.run(
-        bot.setmodel_command(update, DummyContext(["primary", "model/test,model/alt"]))
-    )
-    asyncio.run(
-        bot.setmodel_command(update, DummyContext(["fallback", "fallback/model"]))
-    )
-    asyncio.run(bot.settoken_command(update, DummyContext(["new-token-123456"])))
-    asyncio.run(
-        bot.settoken_command(update, DummyContext(["fallback", "fallback-token-5555"]))
-    )
+    asyncio.run(bot.setmodel_command(update, DummyContext(["gpt-a"])))
+    asyncio.run(bot.models_command(update, DummyContext()))
     asyncio.run(bot.llmconfig_command(update, DummyContext()))
 
     reply_texts = [text for text, _ in update.message.replies]
-    assert any("URL (primary) обновлен" in text for text in reply_texts)
-    assert any("URL (fallback) обновлен" in text for text in reply_texts)
-    assert any("Модель (primary) обновлена" in text for text in reply_texts)
-    assert any("Модель (fallback) обновлена" in text for text in reply_texts)
-    assert any("Токен (primary) обновлен" in text for text in reply_texts)
-    assert any("Токен (fallback) обновлен" in text for text in reply_texts)
-    assert any("Текущие LLM настройки" in text for text in reply_texts)
-    assert any("Fallback:" in text for text in reply_texts)
+    assert any("Модель ChatGPT обновлена: gpt-a" in text for text in reply_texts)
+    assert any("GPT A" in text and "gpt-a" in text for text in reply_texts)
+    assert any("ChatGPT plan usage" in text for text in reply_texts)
+    assert any("owner@example.com" in text for text in reply_texts)
 
     env_text = env_path.read_text(encoding="utf-8")
-    assert "PRIMARY_LLM_URL=https://example.com/v1/chat/completions" in env_text
-    assert "FALLBACK_LLM_URL=https://fallback.example/v1/chat/completions" in env_text
-    assert "PRIMARY_LLM_MODEL=model/test,model/alt" in env_text
-    assert "FALLBACK_LLM_MODEL=fallback/model" in env_text
-    assert "PRIMARY_LLM_API_KEY=new-token-123456" in env_text
-    assert "FALLBACK_LLM_TOKEN=fallback-token-5555" in env_text
-    assert "new-token-123456" not in bot.redact_sensitive_text(
-        "runtime token: new-token-123456"
-    )
-    assert "fallback-token-5555" not in bot.redact_sensitive_text(
-        "runtime token: fallback-token-5555"
-    )
+    assert env_text == "CHATGPT_MODEL=gpt-a\n"
 
 
 def test_set_commands_usage_and_validation(monkeypatch, tmp_path):
     _reset_runtime(monkeypatch, tmp_path / ".env")
     update = DummyUpdate(user_id=1)
 
-    asyncio.run(bot.seturl_command(update, DummyContext([])))
     asyncio.run(bot.setmodel_command(update, DummyContext([])))
-    asyncio.run(bot.settoken_command(update, DummyContext([])))
-    asyncio.run(bot.setmodel_command(update, DummyContext(["model-only"])))
-    asyncio.run(bot.setmodel_command(update, DummyContext(["primary"])))
-    asyncio.run(bot.seturl_command(update, DummyContext(["bad-url"])))
-    asyncio.run(bot.settoken_command(update, DummyContext(["fallback"])))
+    asyncio.run(bot.setmodel_command(update, DummyContext(["model-a,model-b"])))
 
     texts = [text for text, _ in update.message.replies]
-    assert any("/seturl <url>" in text for text in texts)
-    assert any("/setmodel primary <model1,model2,...>" in text for text in texts)
-    assert any("Укажи scope модели: primary или fallback" in text for text in texts)
-    assert any("Значение model не указано" in text for text in texts)
-    assert any("/settoken <token>" in text for text in texts)
-    assert any("URL должен начинаться" in text for text in texts)
-    assert any("Значение token не указано" in text for text in texts)
+    assert any("/setmodel auto" in text for text in texts)
+    assert any("только одна ChatGPT-модель" in text for text in texts)
 
 
 def test_admin_only_blocks_non_admin(monkeypatch, tmp_path):
     _reset_runtime(monkeypatch, tmp_path / ".env")
     update = DummyUpdate(user_id=2)
 
-    asyncio.run(bot.setmodel_command(update, DummyContext(["primary", "model/test"])))
+    asyncio.run(bot.setmodel_command(update, DummyContext(["gpt-test"])))
     text, _ = update.message.replies[-1]
     assert text == "У вас нет доступа к этому боту."
 

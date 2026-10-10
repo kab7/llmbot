@@ -53,8 +53,9 @@ do not have usable permalinks. After the first citation rejection, the next
 attempt receives the rejected answer and a focused instruction to copy exact
 URLs from the `Оригинал` markers. Combined requests use
 `COMBINED_LLM_REQUEST_TIMEOUT_SECONDS` (default `90`) instead of the ordinary
-LLM timeout. All provider calls set `max_tokens` from
-`LLM_MAX_OUTPUT_TOKENS` (default `4096`).
+LLM timeout. ChatGPT plan usage requires streaming Responses requests and does
+not accept `max_output_tokens`; incomplete streams are rejected and retried with
+a compact full-rewrite instruction.
 
 The response must contain at least one canonical `Оригинал` URL, but additional
 Telegram URLs may come from anywhere in the supplied message text. Duplicate
@@ -191,16 +192,13 @@ when evidence is missing.
 ## One-request model override
 
 ```text
-Суммаризируй папку AI с помощью anthropic/claude-opus-4.6
-Используй модель openai/gpt-4.1 для анализа чата Release за сутки
-Сделай одну общую сводку папки news за сегодня через дипсик
+Суммаризируй папку AI с помощью <slug из /models>
+Используй модель gpt-specific для анализа чата Release за сутки
 ```
 
-The override affects only the analysis call. Parsing still uses configured
-candidates. The requested model gets three attempts and does not fall back to
-the configured model lists. The `deepseek`/`дипсик` alias is different: it
-selects all configured DeepSeek candidates and preserves their normal
-primary/fallback provider order while excluding non-DeepSeek models.
+The exact slug override affects only the analysis call. Parsing continues to use
+the configured `CHATGPT_MODEL`. The requested model gets three attempts. There
+are no provider aliases or fallback routes.
 
 ## Periodic schedules
 
@@ -232,7 +230,7 @@ Every N days:
 Combined options:
 
 ```text
-Суммаризируй непрочитанные в папке AI каждый день в 20:00 с помощью anthropic/claude-opus-4.6 и отмечай прочитанными
+Суммаризируй непрочитанные в папке AI каждый день в 20:00 с помощью gpt-specific и отмечай прочитанными
 ```
 
 A schedule requires explicit recurrence and a valid local `HH:MM`. It is saved
@@ -247,48 +245,37 @@ Management:
 
 ## Runtime LLM configuration
 
-Inspect:
+Inspect status and account models:
 
 ```text
 /llmconfig
+/models
 ```
 
-Primary endpoint/token default scope:
+Select a model:
 
 ```text
-/seturl https://ai.api.cloud.yandex.net/v1/chat/completions
-/settoken <token>
+/setmodel auto
+/setmodel <slug from /models>
 ```
 
-Explicit primary/fallback:
+`/setmodel` updates memory and persists `CHATGPT_MODEL` to `.env`.
 
-```text
-/seturl primary https://ai.api.cloud.yandex.net/v1/chat/completions
-/seturl fallback https://ai.api.cloud.yandex.net/v1/chat/completions
-/settoken primary <token>
-/settoken fallback <token>
+## ChatGPT subscription authorization
+
+```bash
+venv/bin/python scripts/chatgpt_auth.py
 ```
 
-Model scope is mandatory:
+For a remote Docker server, transfer the complete owner-only credential file:
 
-```text
-/setmodel primary gpt://<folder_id>/deepseek-v4.1-flash/latest
-/setmodel fallback gpt://<folder_id>/aliceai-llm/latest
+```bash
+scp chatgpt_credentials.json root@SERVER:/data/srv/data/llmbot/chatgpt_credentials.json
+ssh root@SERVER chmod 600 /data/srv/data/llmbot/chatgpt_credentials.json
 ```
 
-Changes are applied in memory and persisted to `.env`.
-
-## Provider configuration
-
-Yandex Cloud:
-
-```dotenv
-PRIMARY_LLM_URL=https://ai.api.cloud.yandex.net/v1/chat/completions
-PRIMARY_LLM_MODEL=gpt://<folder_id>/<model>
-PRIMARY_LLM_API_KEY=...
-```
-
-Yandex uses `Api-Key` authorization.
+Never paste access/refresh tokens into Telegram, chat, `.env`, or source. The bot
+has no runtime token command.
 
 ## Operational commands
 
@@ -299,9 +286,8 @@ Yandex uses `Api-Key` authorization.
 /context
 /reset
 /llmconfig
-/seturl primary <url>
-/setmodel primary <model>
-/settoken primary <token>
+/models
+/setmodel <model|auto>
 /schedules
 /delschedule <id>
 ```

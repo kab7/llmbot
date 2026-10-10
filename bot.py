@@ -12,7 +12,6 @@ import threading
 from logging.handlers import RotatingFileHandler
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from telegram import Update
@@ -31,11 +30,13 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 import config
-from llm_runtime import (
-    LLMRuntimeConfig,
-    LLMSettings,
-    extract_yandex_folder_id,
-    is_yandex_chat_completions_url,
+from chatgpt_runtime import (
+    OPENAI_RESPONSES_URL,
+    ChatGPTCandidate,
+    ChatGPTCredentialsError,
+    ChatGPTResponseError,
+    ChatGPTSubscriptionClient,
+    messages_to_responses_payload,
 )
 from schedule_runtime import (
     build_schedule_record,
@@ -99,8 +100,6 @@ class RedactingFormatter(logging.Formatter):
 for _initial_sensitive_value in (
     config.TELEGRAM_BOT_TOKEN,
     config.TELEGRAM_API_HASH,
-    config.DEFAULT_LLM_TOKEN,
-    config.DEFAULT_FALLBACK_LLM_TOKEN,
 ):
     register_sensitive_log_value(_initial_sensitive_value)
 
@@ -109,8 +108,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-_free_model_rate_limit_lock = threading.Lock()
-_free_model_next_allowed_at: dict[str, float] = {}
 
 
 def _setup_file_logging() -> None:
@@ -184,14 +181,10 @@ DIALOGS_PROBE_TIMEOUT_SECONDS = 15
 TELETHON_STARTUP_TIMEOUT_SECONDS = 20
 GET_FOLDERS_TIMEOUT_SECONDS = 20
 
-# Runtime-конфиг LLM (можно менять командами /seturl /settoken /setmodel)
-llm_runtime = LLMRuntimeConfig(
-    config.DEFAULT_LLM_URL,
-    config.DEFAULT_LLM_TOKEN,
-    config.DEFAULT_LLM_MODEL,
-    config.DEFAULT_FALLBACK_LLM_URL,
-    config.DEFAULT_FALLBACK_LLM_TOKEN,
-    config.DEFAULT_FALLBACK_LLM_MODEL,
+# The only LLM route is ChatGPT plan usage through the official OAuth flow.
+chatgpt_client = ChatGPTSubscriptionClient(
+    config.CHATGPT_CREDENTIALS_FILE,
+    config.CHATGPT_MODEL,
 )
 
 EMOJI_PATTERN = re.compile(
@@ -578,128 +571,6 @@ def _apply_schedule_intent_guard(
     return None, None, None, False
 
 
-def _sanitize_url_for_logs(url: str) -> str:
-    """Скрывает query/credentials в URL перед логированием."""
-    try:
-        parsed = urlsplit(url)
-        host = parsed.hostname or parsed.netloc
-        if parsed.port:
-            host = f"{host}:{parsed.port}"
-        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
-    except Exception:
-        return "<invalid-url>"
-
-
-def _build_llm_headers(url: str, token: str, model: str) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if not token:
-        return headers
-
-    if is_yandex_chat_completions_url(url):
-        folder_id = extract_yandex_folder_id(model)
-        if not folder_id:
-            raise ValueError(
-                "Для Yandex Cloud модель должна быть в формате gpt://<folder_id>/<model>"
-            )
-        headers["Authorization"] = f"Api-Key {token}"
-        headers["x-folder-id"] = folder_id
-        return headers
-
-    headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def _is_free_model_name(model: str) -> bool:
-    return (model or "").strip().lower().endswith("free")
-
-
-def _is_fallback_candidate(candidate) -> bool:
-    if hasattr(candidate, "scope"):
-        return getattr(candidate, "scope", "") == "fallback"
-    fallback = llm_runtime.get_fallback_settings()
-    return (
-        candidate.url == fallback.url
-        and candidate.model == fallback.model
-        and candidate.token == fallback.token
-    )
-
-
-def _get_free_model_timing(candidate) -> tuple[int, int]:
-    if not _is_free_model_name(candidate.model):
-        return 0, 0
-    if _is_fallback_candidate(candidate):
-        return (
-            config.FALLBACK_FREE_MODEL_INTERVAL_SECONDS,
-            config.FALLBACK_FREE_MODEL_429_BACKOFF_SECONDS,
-        )
-    return (
-        config.PRIMARY_FREE_MODEL_INTERVAL_SECONDS,
-        config.PRIMARY_FREE_MODEL_429_BACKOFF_SECONDS,
-    )
-
-
-def _get_free_model_backoff_step_seconds(candidate) -> int:
-    if not _is_free_model_name(candidate.model):
-        return 0
-    if _is_fallback_candidate(candidate):
-        return config.FALLBACK_FREE_MODEL_429_BACKOFF_STEP_SECONDS
-    return config.PRIMARY_FREE_MODEL_429_BACKOFF_STEP_SECONDS
-
-
-def _free_model_rate_limit_key(candidate) -> str:
-    scope = getattr(candidate, "scope", "") or (
-        "fallback" if _is_fallback_candidate(candidate) else "primary"
-    )
-    return f"{scope}|{candidate.url}"
-
-
-def _wait_for_free_model_slot(candidate) -> None:
-    if not _is_free_model_name(candidate.model):
-        return
-    interval_seconds, _ = _get_free_model_timing(candidate)
-    key = _free_model_rate_limit_key(candidate)
-    now = time.monotonic()
-    with _free_model_rate_limit_lock:
-        next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
-        reserved_at = max(next_allowed_at, now)
-        _free_model_next_allowed_at[key] = reserved_at + max(interval_seconds, 0)
-
-    wait_seconds = max(0.0, reserved_at - now)
-    if wait_seconds > 0:
-        logger.info(
-            "⏱️ Жду %.1fs перед запросом к free-модели '%s'",
-            wait_seconds,
-            candidate.model,
-        )
-        time.sleep(wait_seconds)
-
-
-def _apply_free_model_429_backoff(candidate, attempt: int) -> int:
-    _, backoff_seconds = _get_free_model_timing(candidate)
-    if backoff_seconds <= 0:
-        return 0
-    step_seconds = _get_free_model_backoff_step_seconds(candidate)
-    wait_seconds = backoff_seconds + max(0, attempt - 1) * step_seconds
-
-    key = _free_model_rate_limit_key(candidate)
-    now = time.monotonic()
-    with _free_model_rate_limit_lock:
-        next_allowed_at = _free_model_next_allowed_at.get(key, 0.0)
-        _free_model_next_allowed_at[key] = max(next_allowed_at, now + wait_seconds)
-    return wait_seconds
-
-
-def _has_pending_free_attempts(
-    scope_candidates: list, candidate_idx: int, attempt: int, max_attempts: int
-) -> bool:
-    remaining_in_round = scope_candidates[candidate_idx:]
-    if any(_is_free_model_name(candidate.model) for candidate in remaining_in_round):
-        return True
-    return attempt < max_attempts and any(
-        _is_free_model_name(candidate.model) for candidate in scope_candidates
-    )
-
-
 def _extract_numeric_dates(text: str) -> set[str]:
     dates: set[str] = set()
     for raw_date in NUMERIC_DATE_PATTERN.findall(text or ""):
@@ -905,65 +776,20 @@ def _build_analysis_query(query: Optional[str]) -> str:
     return "Сделай краткое саммари переписки по делу."
 
 
-DEEPSEEK_REQUEST_PATTERN = re.compile(
-    r"(?i)\b(?:через|с\s+помощью|используй(?:\s+модель)?)\s+"
-    r"(?:модель\s+)?(?:deepseek|дипсик\w*)\b"
-)
-EXPLICIT_DEEPSEEK_MODEL_PATTERN = re.compile(
-    r"(?i)\bdeepseek/[\w./:-]+"
-)
-DEEPSEEK_MODEL_ALIASES = {
-    "deepseek",
-    "дипсик",
-    "дипсика",
-    "дипсиком",
-}
-
-
 def _resolve_requested_model_override(
     user_message: str, parsed_model: Optional[str]
 ) -> Optional[str]:
-    """Resolve deterministic natural-language aliases for one-request models."""
-    text = user_message or ""
-    if not DEEPSEEK_REQUEST_PATTERN.search(text):
-        return parsed_model
-
-    explicit_match = EXPLICIT_DEEPSEEK_MODEL_PATTERN.search(text)
-    if explicit_match:
-        return explicit_match.group(0)
-    return "deepseek"
+    """Return the parser's exact ChatGPT model slug without provider aliases."""
+    del user_message
+    normalized = (parsed_model or "").strip()
+    return normalized or None
 
 
-def _build_requested_model_candidates(model_name: str) -> list[LLMSettings]:
+def _build_requested_model_candidates(model_name: str) -> list[ChatGPTCandidate]:
     normalized_model = (model_name or "").strip()
     if not normalized_model:
         raise ValueError("Название модели не указано")
-
-    if normalized_model.casefold() in DEEPSEEK_MODEL_ALIASES:
-        candidates = [
-            candidate
-            for candidate in llm_runtime.get_candidate_settings()
-            if "deepseek" in candidate.model.casefold() and candidate.token
-        ]
-        if not candidates:
-            raise ValueError(
-                "В конфигурации нет доступной DeepSeek-модели с токеном"
-            )
-        return candidates
-
-    primary = llm_runtime.get_settings()
-    fallback = llm_runtime.get_fallback_settings()
-    base = primary if primary.token else fallback
-    if not base.token:
-        raise ValueError("Нет токена для выполнения запроса с указанной моделью")
-    return [
-        LLMSettings(
-            url=base.url,
-            token=base.token,
-            model=normalized_model,
-            scope="primary",
-        )
-    ]
+    return [ChatGPTCandidate(model=normalized_model)]
 
 
 def _compact_query_for_display(query: Optional[str], max_length: int = 160) -> str:
@@ -1191,7 +1017,6 @@ def _upsert_env_var(key: str, value: str) -> None:
     tmp_path.write_text(content, encoding="utf-8")
     tmp_path.replace(env_path)
 
-
 def _call_llm_api_internal(
     messages: list,
     candidates_override: Optional[list] = None,
@@ -1199,454 +1024,193 @@ def _call_llm_api_internal(
     response_validator: Optional[Any] = None,
     max_attempts_override: Optional[int] = None,
     request_timeout_seconds_override: Optional[int] = None,
-) -> Dict[str, str]:
-    """Вызов OpenAI-compatible Chat Completions API с метаданными ответа."""
-    try:
-        if not llm_runtime.has_any_token():
-            raise Exception("LLM токен не задан. Используй /settoken <token>.")
-
-        request_id = uuid4().hex[:10]
-        candidates = candidates_override or llm_runtime.get_candidate_settings()
-        primary = candidates[0]
-
-        logger.info(f"🤖 Запрос к LLM: {primary.model}")
-
-        logger.info(f"🧾 Сообщений в LLM запросе: {len(messages)}")
-        if logger.isEnabledFor(logging.DEBUG):
-            for msg in messages:
-                role_emoji = (
-                    "👤"
-                    if msg["role"] == "user"
-                    else "⚙️"
-                    if msg["role"] == "system"
-                    else "🤖"
-                )
-                preview = msg.get("content", "")[:100] + (
-                    "..." if len(msg.get("content", "")) > 100 else ""
-                )
-                logger.debug(f"  {role_emoji} {msg['role']}: {preview}")
-
-        def extract_error_details(resp) -> str:
-            try:
-                data = resp.json()
-            except Exception:
-                return resp.text[:300]
-
-            error_obj = data.get("error")
-            if isinstance(error_obj, dict):
-                metadata = error_obj.get("metadata") or {}
-                raw = metadata.get("raw")
-                message = error_obj.get("message")
-                if raw:
-                    return str(raw)
-                if message:
-                    return str(message)
-            return str(data)[:300]
-
-        length_repair_added = False
-
-        def request_length_repair(content: str) -> None:
-            nonlocal length_repair_added
-            if length_repair_added:
-                return
-            if content:
-                messages.append({"role": "assistant", "content": content})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Предыдущий ответ был обрезан провайдером из-за лимита "
-                        f"{config.LLM_MAX_OUTPUT_TOKENS} выходных токенов. "
-                        "Перепиши ответ заново, а не продолжай с места обрыва. "
-                        "Сохрани исходные требования и формат, используй более "
-                        "краткие формулировки и обязательно полностью закончи "
-                        "ответ в пределах этого лимита."
-                    ),
-                }
-            )
-            length_repair_added = True
-
-        logger.info(
-            f"📤 HTTP POST candidates: {', '.join([c.model for c in candidates])}"
+) -> dict[str, Any]:
+    """Call ChatGPT plan usage through the streaming Responses API."""
+    if not chatgpt_client.is_configured():
+        raise ChatGPTCredentialsError(
+            "ChatGPT OAuth credentials не настроены. "
+            "Запусти: venv/bin/python scripts/chatgpt_auth.py"
         )
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"  Messages count: {len(messages)}")
 
-        max_attempts = max(1, int(max_attempts_override or config.LLM_MAX_RETRIES))
-        request_timeout_seconds = max(
-            1,
-            int(
-                request_timeout_seconds_override
-                or config.LLM_REQUEST_TIMEOUT_SECONDS
-            ),
+    request_id = uuid4().hex[:10]
+    candidates = candidates_override or [ChatGPTCandidate(chatgpt_client.model)]
+    max_attempts = max(1, int(max_attempts_override or config.LLM_MAX_RETRIES))
+    request_timeout_seconds = max(
+        1,
+        int(
+            request_timeout_seconds_override
+            or config.LLM_REQUEST_TIMEOUT_SECONDS
+        ),
+    )
+    stats: dict[str, dict[str, int]] = {}
+    last_error: Exception | None = None
+    length_repair_added = False
+
+    def request_length_repair(content: str) -> None:
+        nonlocal length_repair_added
+        if length_repair_added:
+            return
+        if content:
+            messages.append({"role": "assistant", "content": content})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Предыдущий ответ не был завершён моделью. Перепиши ответ "
+                    "заново, а не продолжай с места обрыва. Сохрани исходные "
+                    "требования и формат, используй более краткие формулировки "
+                    "и обязательно полностью закончи ответ."
+                ),
+            }
         )
-        last_error = None
-        last_status_code = None
-        last_error_details = ""
-        stats: dict[str, dict[str, int]] = {}
-        candidates_by_scope: dict[str, list] = {"primary": [], "fallback": []}
+        length_repair_added = True
+
+    logger.info(
+        "🤖 ChatGPT Responses request: %s",
+        ", ".join(candidate.model for candidate in candidates),
+    )
+    for attempt in range(1, max_attempts + 1):
         for candidate in candidates:
-            scope = getattr(candidate, "scope", "primary") or "primary"
-            candidates_by_scope.setdefault(scope, []).append(candidate)
-
-        for scope in ("primary", "fallback"):
-            scope_candidates = candidates_by_scope.get(scope) or []
-            if not scope_candidates:
-                continue
-
-            has_free_candidates = any(
-                _is_free_model_name(candidate.model) for candidate in scope_candidates
+            model_stats = stats.setdefault(
+                candidate.model,
+                {
+                    "requests": 0,
+                    "rate_limits": 0,
+                    "successes": 0,
+                    "rejected": 0,
+                    "errors": 0,
+                },
             )
-            logger.info(
-                "🎯 Обрабатываю scope '%s': %s",
-                scope,
-                ", ".join(candidate.model for candidate in scope_candidates),
+            model_stats["requests"] += 1
+            log_payload = messages_to_responses_payload(messages)
+            log_payload["model"] = candidate.model
+            llm_traffic_logger.info(
+                "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
+                request_id,
+                candidate.model,
+                OPENAI_RESPONSES_URL,
+                json.dumps(log_payload, ensure_ascii=False),
             )
-
-            for attempt in range(1, max_attempts + 1):
-                round_wait_seconds = 0
-                logger.info(
-                    "🔁 Раунд LLM попытки %s/%s для scope '%s'",
+            try:
+                response = chatgpt_client.create_response(
+                    messages,
+                    requested_model=candidate.model,
+                    timeout=request_timeout_seconds,
+                )
+            except ChatGPTResponseError as exc:
+                last_error = exc
+                code = (exc.code or "").casefold()
+                is_rate_limit = exc.status_code == 429 or code in {
+                    "subscription_sharing_usage_limit_exceeded",
+                    "subscription_sharing_usage_unavailable",
+                    "rate_limit_exceeded",
+                }
+                is_incomplete = code in {
+                    "incomplete",
+                    "max_output_tokens",
+                    "content_filter",
+                } or "incomplete" in code
+                if is_rate_limit:
+                    model_stats["rate_limits"] += 1
+                    wait_seconds = 2 ** (attempt - 1)
+                    if rate_limit_callback is not None:
+                        try:
+                            rate_limit_callback(candidate, wait_seconds, str(exc))
+                        except Exception as callback_error:
+                            logger.warning(
+                                "⚠️ Не удалось вызвать rate-limit callback: %s",
+                                callback_error,
+                            )
+                elif is_incomplete:
+                    model_stats["rejected"] += 1
+                    request_length_repair(exc.partial_text)
+                else:
+                    model_stats["errors"] += 1
+                llm_traffic_logger.error(
+                    "LLM_RESPONSE_ERROR id=%s candidate=%s attempt=%s "
+                    "status=%s code=%s error=%s",
+                    request_id,
+                    candidate.model,
+                    attempt,
+                    exc.status_code,
+                    exc.code,
+                    str(exc),
+                )
+                logger.warning(
+                    "⚠️ ChatGPT model '%s' failed on attempt %s/%s: %s",
+                    candidate.model,
                     attempt,
                     max_attempts,
-                    scope,
+                    exc,
                 )
-
-                for candidate_idx, candidate in enumerate(scope_candidates, start=1):
-                    model_stats = stats.setdefault(
-                        candidate.model,
-                        {
-                            "requests": 0,
-                            "rate_limits": 0,
-                            "successes": 0,
-                            "rejected": 0,
-                            "errors": 0,
-                        },
-                    )
-                    model_stats["requests"] += 1
-                    payload = {
-                        "model": candidate.model,
-                        "messages": messages,
-                        "max_tokens": config.LLM_MAX_OUTPUT_TOKENS,
-                    }
-                    headers = _build_llm_headers(
-                        candidate.url, candidate.token, candidate.model
-                    )
-                    safe_url = _sanitize_url_for_logs(candidate.url)
-                    logger.info(
-                        f"   Candidate {candidate_idx}/{len(scope_candidates)}: model={candidate.model}, url={safe_url}"
-                    )
-                    llm_traffic_logger.info(
-                        "LLM_REQUEST id=%s candidate=%s url=%s payload=%s",
-                        request_id,
-                        candidate.model,
-                        safe_url,
-                        json.dumps(payload, ensure_ascii=False),
-                    )
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"  Payload size: {len(json.dumps(payload))} bytes")
-
-                    _wait_for_free_model_slot(candidate)
-                    try:
-                        response = requests.post(
-                            candidate.url,
-                            json=payload,
-                            headers=headers,
-                            timeout=request_timeout_seconds,
-                        )
-                    except requests.exceptions.RequestException as e:
-                        model_stats["errors"] += 1
-                        last_error = e
-                        llm_traffic_logger.error(
-                            "LLM_HTTP_ERROR id=%s candidate=%s url=%s attempt=%s error=%s",
-                            request_id,
-                            candidate.model,
-                            safe_url,
-                            attempt,
-                            str(e),
-                        )
-                        wait_seconds = 2 ** (attempt - 1)
-                        round_wait_seconds = max(round_wait_seconds, wait_seconds)
-                        logger.error(
-                            f"Ошибка HTTP запроса к API (model={candidate.model}, round {attempt}/{max_attempts}): {e}"
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ Не удалось получить ответ от '%s', пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    logger.info(
-                        f"📥 HTTP Response: {response.status_code} "
-                        f"(model={candidate.model}, round {attempt}/{max_attempts})"
-                    )
-                    llm_traffic_logger.info(
-                        "LLM_RESPONSE id=%s candidate=%s url=%s attempt=%s status=%s body=%s",
-                        request_id,
-                        candidate.model,
-                        safe_url,
-                        attempt,
-                        response.status_code,
-                        response.text,
-                    )
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"  Response size: {len(response.text)} bytes")
-
-                    if response.status_code == 429:
-                        model_stats["rate_limits"] += 1
-                        wait_seconds = _apply_free_model_429_backoff(candidate, attempt)
-                        if wait_seconds <= 0:
-                            wait_seconds = 2 ** (attempt - 1)
-                            round_wait_seconds = max(round_wait_seconds, wait_seconds)
-                        details = extract_error_details(response)
-                        last_status_code = 429
-                        last_error_details = details
-                        last_error = Exception(
-                            f"Ошибка LLM API ({response.status_code}): {details}"
-                        )
-                        if rate_limit_callback is not None:
-                            try:
-                                rate_limit_callback(candidate, wait_seconds, details)
-                            except Exception as callback_error:
-                                logger.warning(
-                                    "⚠️ Не удалось вызвать rate-limit callback: %s",
-                                    callback_error,
-                                )
-                        logger.warning(
-                            "⏳ LLM rate limit (429), модель '%s' пропускается в этом раунде: %s",
-                            candidate.model,
-                            details,
-                        )
-                        if _is_free_model_name(candidate.model) and wait_seconds > 0:
-                            should_sleep_now = _has_pending_free_attempts(
-                                scope_candidates, candidate_idx, attempt, max_attempts
-                            )
-                            if should_sleep_now:
-                                logger.warning(
-                                    "⏳ Free-модель '%s' получила 429, жду %ss перед следующей free-попыткой",
-                                    candidate.model,
-                                    wait_seconds,
-                                )
-                                time.sleep(wait_seconds)
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После 429 на '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    if response.status_code != 200:
-                        model_stats["errors"] += 1
-                        details = extract_error_details(response)
-                        last_status_code = response.status_code
-                        last_error_details = details
-                        last_error = Exception(
-                            f"Ошибка LLM API ({response.status_code}): {details}"
-                        )
-                        logger.warning(
-                            "⚠️ Модель '%s' вернула ошибку %s: %s",
-                            candidate.model,
-                            response.status_code,
-                            details,
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После ошибки '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    try:
-                        result = response.json()
-                    except Exception as e:
-                        model_stats["errors"] += 1
-                        last_error = e
-                        logger.warning(
-                            "⚠️ Некорректный JSON от модели '%s': %s",
-                            candidate.model,
-                            e,
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После некорректного JSON от '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"📋 Структура ответа: {list(result.keys())}")
-
-                    content = None
-                    if "choices" in result:
-                        choice = result["choices"][0]
-                        content = choice["message"]["content"]
-                    else:
-                        model_stats["errors"] += 1
-                        last_error = Exception("API вернул неожиданный формат ответа")
-                        logger.warning(
-                            "⚠️ Неожиданный формат ответа от модели '%s'",
-                            candidate.model,
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После неожиданного формата от '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    finish_reason = str(choice.get("finish_reason") or "").casefold()
-                    if finish_reason in {"content_filter", "safety"}:
-                        model_stats["rejected"] += 1
-                        rejection_reason = (
-                            f"провайдер остановил ответ фильтром безопасности "
-                            f"(finish_reason={finish_reason})"
-                        )
-                        last_error = Exception(rejection_reason)
-                        logger.warning(
-                            "⚠️ Ответ модели '%s' отклонен провайдером: %s",
-                            candidate.model,
-                            rejection_reason,
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После отказа '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    if finish_reason in {"length", "max_tokens"}:
-                        model_stats["rejected"] += 1
-                        rejection_reason = (
-                            "провайдер обрезал ответ по лимиту выходных токенов "
-                            f"(finish_reason={finish_reason})"
-                        )
-                        last_error = Exception(rejection_reason)
-                        request_length_repair(content or "")
-                        logger.warning(
-                            "⚠️ Ответ модели '%s' отклонен как незавершённый: %s",
-                            candidate.model,
-                            rejection_reason,
-                        )
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После обрезанного ответа от '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    if not content:
-                        model_stats["errors"] += 1
-                        last_error = Exception("API вернул пустой ответ")
-                        logger.warning("⚠️ Пустой ответ от модели '%s'", candidate.model)
-                        if candidate_idx < len(scope_candidates):
-                            logger.warning(
-                                "↪️ После пустого ответа от '%s' пробую следующую модель '%s'",
-                                candidate.model,
-                                scope_candidates[candidate_idx].model,
-                            )
-                        continue
-
-                    if response_validator is not None:
-                        rejection_reason = response_validator(content, candidate)
-                        if rejection_reason:
-                            model_stats["rejected"] += 1
-                            last_error = Exception(rejection_reason)
-                            logger.warning(
-                                "⚠️ Ответ модели '%s' отклонен валидатором: %s",
-                                candidate.model,
-                                rejection_reason,
-                            )
-                            if candidate_idx < len(scope_candidates):
-                                logger.warning(
-                                    "↪️ После некачественного ответа от '%s' пробую следующую модель '%s'",
-                                    candidate.model,
-                                    scope_candidates[candidate_idx].model,
-                                )
-                            continue
-
-                    actual_model = (
-                        result.get("model") if isinstance(result, dict) else None
-                    )
-                    used_model = (
-                        str(actual_model).strip()
-                        if isinstance(actual_model, str) and actual_model.strip()
-                        else candidate.model
-                    )
-                    used_url = safe_url
-                    model_stats["successes"] += 1
-                    logger.info(
-                        f"✅ Ответ от LLM получен (модель: {used_model}, url: {used_url})"
-                    )
-                    llm_traffic_logger.info(
-                        "LLM_RESULT id=%s model=%s url=%s content=%s",
-                        request_id,
-                        used_model,
-                        used_url,
-                        content,
-                    )
-                    if logger.isEnabledFor(logging.DEBUG):
-                        preview = content[:200] + "..." if len(content) > 200 else content
-                        logger.debug(f"✅ Ответ от LLM: {preview}")
-                    return {
-                        "content": content,
-                        "model": used_model or "",
-                        "url": used_url or "",
-                        "candidate_model": candidate.model,
-                        "scope": getattr(candidate, "scope", "primary"),
-                        "stats": stats,
-                    }
-
-                if attempt < max_attempts and round_wait_seconds > 0 and not has_free_candidates:
-                    logger.warning(
-                        "⏳ Раунд LLM %s/%s для scope '%s' завершился без успеха, жду %ss и повторяю список моделей",
-                        attempt,
-                        max_attempts,
-                        scope,
-                        round_wait_seconds,
-                    )
-                    time.sleep(round_wait_seconds)
-
-            if scope == "primary" and candidates_by_scope.get("fallback"):
+                continue
+            except (ChatGPTCredentialsError, requests.exceptions.RequestException) as exc:
+                last_error = exc
+                model_stats["errors"] += 1
                 logger.warning(
-                    "↪️ Primary scope исчерпан после %s раундов, переключаюсь на fallback",
+                    "⚠️ ChatGPT request failed on attempt %s/%s: %s",
+                    attempt,
                     max_attempts,
+                    exc,
                 )
+                if isinstance(exc, ChatGPTCredentialsError):
+                    break
+                continue
 
-        if last_status_code == 429:
-            raise Exception(
-                f"Превышен лимит запросов к LLM API (429). {last_error_details}"
+            content = response.content
+            if response_validator is not None:
+                rejection_reason = response_validator(content, candidate)
+                if rejection_reason:
+                    model_stats["rejected"] += 1
+                    last_error = Exception(rejection_reason)
+                    logger.warning(
+                        "⚠️ Ответ модели '%s' отклонен валидатором: %s",
+                        response.model or candidate.model,
+                        rejection_reason,
+                    )
+                    continue
+
+            used_model = response.model or candidate.model
+            if used_model != candidate.model and candidate.model == "auto":
+                model_stats["successes"] += 1
+                stats[used_model] = stats.pop(candidate.model)
+            else:
+                model_stats["successes"] += 1
+            llm_traffic_logger.info(
+                "LLM_RESULT id=%s model=%s url=%s content=%s",
+                request_id,
+                used_model,
+                OPENAI_RESPONSES_URL,
+                content,
             )
-        if isinstance(last_error, requests.exceptions.Timeout):
+            logger.info("✅ ChatGPT response completed (model=%s)", used_model)
+            return {
+                "content": content,
+                "model": used_model,
+                "url": OPENAI_RESPONSES_URL,
+                "candidate_model": candidate.model,
+                "scope": candidate.scope,
+                "stats": stats,
+            }
+
+        if isinstance(last_error, ChatGPTCredentialsError):
+            break
+        if attempt < max_attempts:
+            time.sleep(2 ** (attempt - 1))
+
+    if isinstance(last_error, ChatGPTResponseError):
+        if last_error.status_code == 429 or last_error.code in {
+            "subscription_sharing_usage_limit_exceeded",
+            "subscription_sharing_usage_unavailable",
+            "rate_limit_exceeded",
+        }:
             raise Exception(
-                f"Timeout LLM API ({request_timeout_seconds}s): {last_error}"
+                "Лимит подписки ChatGPT исчерпан или временно недоступен. "
+                f"{last_error}"
             )
-        if last_error:
-            raise Exception(str(last_error))
-        raise Exception("Не удалось получить корректный ответ от LLM API")
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка HTTP запроса к API: {e}")
-        if hasattr(e, "response") and e.response is not None:
-            logger.error(f"Статус: {e.response.status_code}")
-            logger.error(f"Ответ: {e.response.text}")
-            if e.response.status_code == 429:
-                raise Exception(
-                    "Превышен лимит запросов к LLM API (429). Попробуйте чуть позже."
-                )
-        raise Exception(f"Ошибка LLM API: {str(e)}")
-
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка при вызове LLM: {e}", exc_info=True)
-        raise
-
+    if last_error:
+        raise Exception(str(last_error))
+    raise Exception("Не удалось получить завершённый ответ от ChatGPT")
 
 def call_llm_api(messages: list) -> str:
     """Вызов LLM API и возврат только текста ответа."""
@@ -1773,7 +1337,7 @@ async def parse_command_with_gpt(user_message: str) -> Dict[str, Any]:
             "period_value": число дней/часов/сообщений | null,
             "mark_as_read": true | false,
             "query": "полный текст запроса пользователя",
-            "requested_model": "anthropic/claude-opus-4.6" | null,
+            "requested_model": "gpt-specific" | null,
             "recurrence_type": "daily" | "weekly" | "monthly" | "interval_days" | null,
             "interval_days": число | null,
             "time": "HH:MM" | null
@@ -3483,10 +3047,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/schedules - показать периодические задачи\n"
         "/delschedule <id> - удалить периодическую задачу\n\n"
         "/llmconfig - показать текущие LLM настройки\n"
-        "/seturl [primary|fallback] <url> - задать URL API\n"
-        "/setmodel [primary|fallback] <model[,model2,...]> - задать одну или несколько моделей\n"
-        "/settoken [primary|fallback] <token> - задать API токен\n\n"
-        "ℹ️ /seturl, /setmodel и /settoken сохраняют значения в .env\n\n"
+        "/models - показать модели, доступные подписке ChatGPT\n"
+        "/setmodel <model|auto> - выбрать модель ChatGPT\n\n"
+        "ℹ️ OAuth-токены нельзя отправлять боту: авторизация выполняется "
+        "локальным scripts/chatgpt_auth.py.\n\n"
         "**Примеры для чатов:**\n"
         "• Суммаризируй чат Работа за неделю\n"
         "• О чем говорили в личке с Иваном сегодня?\n"
@@ -3538,181 +3102,73 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def format_llm_settings_text() -> str:
-    """Форматирует текущие runtime настройки LLM для пользователя."""
-    settings = llm_runtime.get_settings()
-    fallback = llm_runtime.get_fallback_settings()
+    """Format the fixed ChatGPT subscription route without exposing credentials."""
+    status = chatgpt_client.credential_status()
+    if status.get("configured"):
+        account = status.get("email") or "авторизован"
+        credential_text = f"подключена ({account})"
+        expiry = status.get("expires_at") or "неизвестно"
+    else:
+        credential_text = "не настроена"
+        expiry = "—"
     return (
-        "⚙️ Текущие LLM настройки:\n\n"
-        "Primary:\n"
-        f"• URL: {settings.url}\n"
-        f"• Модель: {settings.model}\n"
-        f"• Токен: {settings.masked_token()}\n\n"
-        "Fallback:\n"
-        f"• URL: {fallback.url}\n"
-        f"• Модель: {fallback.model}\n"
-        f"• Токен: {fallback.masked_token()}"
+        "⚙️ ChatGPT plan usage:\n\n"
+        f"• Модель: {chatgpt_client.model}\n"
+        f"• OAuth session: {credential_text}\n"
+        f"• Access token expires: {expiry}\n"
+        f"• Credentials: {chatgpt_client.credentials_path}\n"
+        f"• Endpoint: {OPENAI_RESPONSES_URL}"
     )
-
-
-def _parse_scope_and_value(
-    args: list[str], value_name: str
-) -> tuple[str, Optional[str], Optional[str]]:
-    """
-    Разбирает аргументы вида:
-    - <value> -> scope=primary
-    - primary <value>
-    - fallback <value>
-    """
-    if not args:
-        return "primary", None, f"Значение {value_name} не указано"
-
-    scope = "primary"
-    raw_args = list(args)
-    head = (raw_args[0] or "").strip().lower()
-    if head in {"primary", "fallback"}:
-        scope = head
-        raw_args = raw_args[1:]
-
-    value = " ".join(raw_args).strip()
-    if not value:
-        return scope, None, f"Значение {value_name} не указано"
-    return scope, value, None
 
 
 @admin_only
 async def llmconfig_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать текущие настройки LLM."""
+    """Show the current ChatGPT subscription configuration."""
     await update.message.reply_text(format_llm_settings_text())
 
 
 @admin_only
-async def seturl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить URL LLM API."""
-    if not context.args:
-        primary_url = llm_runtime.get_settings().url
-        fallback_url = llm_runtime.get_fallback_settings().url
-        await update.message.reply_text(
-            "Использование:\n"
-            "/seturl <url>  (primary)\n"
-            "/seturl primary <url>\n"
-            "/seturl fallback <url>\n\n"
-            f"Primary URL: {primary_url}\n"
-            f"Fallback URL: {fallback_url}"
-        )
-        return
-
-    scope, raw_url, error = _parse_scope_and_value(context.args, "url")
-    if error:
-        await update.message.reply_text(f"❌ {error}")
-        return
-
+async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List models currently exposed to the selected ChatGPT account."""
     try:
-        if scope == "fallback":
-            normalized = llm_runtime.set_fallback_url(raw_url)
-            _upsert_env_var("FALLBACK_LLM_URL", normalized)
-        else:
-            normalized = llm_runtime.set_url(raw_url)
-            _upsert_env_var("PRIMARY_LLM_URL", normalized)
-    except ValueError as e:
-        await update.message.reply_text(f"❌ {e}")
+        models = await asyncio.to_thread(chatgpt_client.list_models)
+    except Exception as exc:
+        await update.message.reply_text(f"❌ Не удалось получить модели: {exc}")
         return
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении URL в .env: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Не удалось сохранить URL в .env: {e}")
+    if not models:
+        await update.message.reply_text("Подписка не вернула доступных моделей.")
         return
-
-    await update.message.reply_text(f"✅ URL ({scope}) обновлен:\n{normalized}")
+    lines = ["Доступные модели ChatGPT:"]
+    for item in models[:30]:
+        lines.append(f"• {item['display_name']}: `{item['slug']}`")
+    if len(models) > 30:
+        lines.append(f"…и ещё {len(models) - 30}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 @admin_only
 async def setmodel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить модель для LLM API."""
+    """Set one ChatGPT model slug or automatic account-order selection."""
     if not context.args:
-        primary_model = llm_runtime.get_settings().model
-        fallback_model = llm_runtime.get_fallback_settings().model
         await update.message.reply_text(
             "Использование:\n"
-            "/setmodel primary <model>\n"
-            "/setmodel primary <model1,model2,...>\n"
-            "/setmodel fallback <model>\n"
-            "/setmodel fallback <model1,model2,...>\n\n"
-            f"Primary модель: {primary_model}\n"
-            f"Fallback модель: {fallback_model}"
+            "/setmodel auto\n"
+            "/setmodel <slug из /models>\n\n"
+            f"Текущая модель: {chatgpt_client.model}"
         )
         return
-
-    head = (context.args[0] or "").strip().lower()
-    if head not in {"primary", "fallback"}:
-        await update.message.reply_text(
-            "❌ Укажи scope модели: primary или fallback.\n"
-            "Пример: /setmodel primary "
-            "gpt://<folder_id>/deepseek-v4.1-flash/latest,"
-            "gpt://<folder_id>/aliceai-llm/latest"
-        )
-        return
-    scope = head
-    raw_model = " ".join(context.args[1:]).strip()
-    if not raw_model:
-        await update.message.reply_text("❌ Значение model не указано")
-        return
+    raw_model = " ".join(context.args).strip()
     try:
-        if scope == "fallback":
-            model = llm_runtime.set_fallback_model(raw_model)
-            _upsert_env_var("FALLBACK_LLM_MODEL", model)
-        else:
-            model = llm_runtime.set_model(raw_model)
-            _upsert_env_var("PRIMARY_LLM_MODEL", model)
-    except ValueError as e:
-        await update.message.reply_text(f"❌ {e}")
+        model = chatgpt_client.set_model(raw_model)
+        _upsert_env_var("CHATGPT_MODEL", model)
+    except ValueError as exc:
+        await update.message.reply_text(f"❌ {exc}")
         return
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении модели в .env: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Не удалось сохранить модель в .env: {e}")
+    except Exception as exc:
+        logger.error("Ошибка при сохранении ChatGPT model в .env: %s", exc, exc_info=True)
+        await update.message.reply_text(f"❌ Не удалось сохранить модель в .env: {exc}")
         return
-
-    await update.message.reply_text(f"✅ Модель ({scope}) обновлена: {model}")
-
-
-@admin_only
-async def settoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить токен для LLM API."""
-    if not context.args:
-        primary = llm_runtime.get_settings().masked_token()
-        fallback = llm_runtime.get_fallback_settings().masked_token()
-        await update.message.reply_text(
-            "Использование:\n"
-            "/settoken <token>  (primary)\n"
-            "/settoken primary <token>\n"
-            "/settoken fallback <token>\n\n"
-            f"Primary токен: {primary}\n"
-            f"Fallback токен: {fallback}"
-        )
-        return
-
-    scope, raw_token, error = _parse_scope_and_value(context.args, "token")
-    if error:
-        await update.message.reply_text(f"❌ {error}")
-        return
-
-    try:
-        if scope == "fallback":
-            register_sensitive_log_value(raw_token)
-            masked = llm_runtime.set_fallback_token(raw_token)
-            _upsert_env_var("FALLBACK_LLM_TOKEN", raw_token)
-        else:
-            register_sensitive_log_value(raw_token)
-            masked = llm_runtime.set_token(raw_token)
-            _upsert_env_var("PRIMARY_LLM_API_KEY", raw_token)
-    except ValueError as e:
-        await update.message.reply_text(f"❌ {e}")
-        return
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении токена в .env: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Не удалось сохранить токен в .env: {e}")
-        return
-
-    await update.message.reply_text(f"✅ Токен ({scope}) обновлен: {masked}")
-
+    await update.message.reply_text(f"✅ Модель ChatGPT обновлена: {model}")
 
 @admin_only
 async def schedules_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4267,11 +3723,13 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
     processing_msg = await update.message.reply_text("Обрабатываю твою команду... ⏳")
 
     try:
-        if not llm_runtime.has_any_token():
+        if not chatgpt_client.is_configured():
             await processing_msg.edit_text(
-                "❌ Ни primary, ни fallback LLM токен не заданы.\n\n"
-                "Установи primary токен командой:\n"
-                "/settoken <token>"
+                "❌ ChatGPT OAuth session не настроена.\n\n"
+                "На машине с браузером запусти:\n"
+                "venv/bin/python scripts/chatgpt_auth.py\n\n"
+                "Затем положи chatgpt_credentials.json по пути из "
+                "CHATGPT_CREDENTIALS_FILE и перезапусти бот."
             )
             return
 
@@ -4587,10 +4045,16 @@ async def main():
         logger.error("Используйте env.example как шаблон.")
         return
 
-    if optional_issues and not llm_runtime.has_any_token():
+    if not chatgpt_client.is_configured():
         for key, description in optional_issues:
             logger.warning(f"⚠️ {key} не задан: {description}")
-        logger.warning("LLM токен можно задать после запуска бота через /settoken.")
+        status = chatgpt_client.credential_status()
+        if status.get("error"):
+            logger.warning("⚠️ ChatGPT OAuth session недоступна: %s", status["error"])
+        logger.warning(
+            "Создайте ChatGPT OAuth credentials локально через "
+            "scripts/chatgpt_auth.py и перезапустите бот."
+        )
 
     # Инициализируем Telethon клиент
     await init_telethon_client()
@@ -4605,9 +4069,8 @@ async def main():
     application.add_handler(CommandHandler("context", context_command))
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("llmconfig", llmconfig_command))
-    application.add_handler(CommandHandler("seturl", seturl_command))
+    application.add_handler(CommandHandler("models", models_command))
     application.add_handler(CommandHandler("setmodel", setmodel_command))
-    application.add_handler(CommandHandler("settoken", settoken_command))
     application.add_handler(CommandHandler("schedules", schedules_command))
     application.add_handler(CommandHandler("delschedule", delschedule_command))
     application.add_handler(
