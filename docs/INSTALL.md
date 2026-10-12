@@ -157,7 +157,7 @@ docker compose build
 docker compose up -d
 ```
 
-Legacy production command:
+Legacy command used on the former host (the primary host uses `docker compose`):
 
 ```bash
 docker-compose config --quiet

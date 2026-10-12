@@ -17,8 +17,16 @@ before installing OS-specific Docker packages.
   outbound Telegram/OpenAI connections. SSH is needed for administration.
 
 The former server `146.103.100.159` was reported unavailable on 2026-10-13.
-Do not treat it as a working deployment destination. The replacement address is
-pending; update `AGENTS.md` after the replacement is verified running.
+Do not treat it as a working deployment destination. The replacement deployment
+is `root@195.63.141.49` (`amnezia2`), SSH port 22 with key authentication.
+It uses the Compose CLI plugin and shares the host with existing VPN and Telegram
+proxy containers. Scope all service operations to the llmbot Compose project.
+
+Recovery on 2026-10-13 reused a verified local Telegram session, generated a new
+ChatGPT OAuth session, and reconstructed three schedules from the available
+local record and prior verified metadata with the user's authorization. The
+original recent schedule database was unavailable. Exact recovered/reconstructed
+queries remain private runtime state. Keep an off-host snapshot after deployment.
 
 ## 1. Install Docker and obtain code
 

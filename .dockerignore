@@ -6,6 +6,7 @@ __pycache__
 *.pyc
 venv
 .env
+.codex_tmp
 chatgpt_credentials*.json
 .chatgpt_credentials*.json.tmp
 *.log

@@ -53,6 +53,8 @@ Python code and tests.
 - OAuth tokens live only in the protected credential JSON and request headers.
 - Credential files are ignored by Git and must not be pasted into chats, logs,
   `.env`, issues, or source control.
+- Local `.codex_tmp` deployment staging is excluded from Docker build context
+  as well as Git.
 - HTTP-client INFO logs remain suppressed; historical logs can be sanitized with
   `scripts/scrub_logs.py`.
 

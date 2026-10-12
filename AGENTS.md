@@ -2,11 +2,13 @@
 
 - GitHub repository: `kab7/llmbot` (`https://github.com/kab7/llmbot`)
 - Former deployment server: `root@146.103.100.159` (reported unavailable on 2026-10-13).
-- Replacement deployment server: pending user-provided address; do not deploy to
-  the former host by default.
+- Primary deployment server: `root@195.63.141.49` (`amnezia2`), SSH port 22,
+  key authentication. Do not deploy to the former host by default.
 - Project path on server: `/root/llmbot`
 - Current deployment style: Docker container started from `/root/llmbot`
-- Prefer `docker compose` on the replacement host; the former host used `docker-compose`.
+- Docker Compose command on the primary server: `docker compose`.
+- The primary server also runs VPN and Telegram-proxy containers. Scope deployment
+  commands to llmbot; preserve those unrelated services.
 - Fresh-host recovery runbook: `docs/DEPLOYMENT.md`.
 
 # Repository Guidance
