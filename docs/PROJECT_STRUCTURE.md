@@ -22,12 +22,15 @@ llmbot/
 ├── env.example
 ├── scripts/
 │   ├── chatgpt_auth.py
+│   ├── telegram_auth.py
+│   ├── deploy_check.py
 │   └── scrub_logs.py
 ├── docs/
 │   ├── AI_DEVELOPMENT.md
 │   ├── SCHEMAS.md
 │   ├── QUICKSTART.md
 │   ├── INSTALL.md
+│   ├── DEPLOYMENT.md
 │   ├── EXAMPLES.md
 │   ├── FAQ.md
 │   ├── PROJECT_STRUCTURE.md
@@ -41,6 +44,7 @@ llmbot/
     ├── test_bot_utils.py
     ├── test_chatgpt_auth.py
     ├── test_chatgpt_runtime.py
+    ├── test_deployment_tools.py
     ├── test_config.py
     ├── test_schedule_runtime.py
     ├── test_scrub_logs.py
@@ -165,6 +169,11 @@ scope validation, and owner-only credential output. The generated file is
 runtime state and must never be committed.
 
 ## Application flow
+
+`scripts/telegram_auth.py` creates/verifies a user session independently of the
+main application. `scripts/deploy_check.py` verifies deployment access without
+polling or jobs. Both are included in the Docker image. See
+[DEPLOYMENT.md](DEPLOYMENT.md) for replacement-host recovery.
 
 ```text
 Telegram Bot API

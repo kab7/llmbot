@@ -161,6 +161,8 @@ def test_dockerfile_copies_every_runtime_module():
         "schedule_runtime.py",
     ):
         assert module in dockerfile
+    for utility in ('scripts/telegram_auth.py', 'scripts/deploy_check.py'):
+        assert utility in dockerfile
 
 
 def test_oauth_credentials_are_excluded_from_git_and_docker_context():

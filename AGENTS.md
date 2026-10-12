@@ -1,10 +1,13 @@
 # Deployment Notes
 
 - GitHub repository: `kab7/llmbot` (`https://github.com/kab7/llmbot`)
-- Primary deployment server for this project: `root@146.103.100.159`
+- Former deployment server: `root@146.103.100.159` (reported unavailable on 2026-10-13).
+- Replacement deployment server: pending user-provided address; do not deploy to
+  the former host by default.
 - Project path on server: `/root/llmbot`
 - Current deployment style: Docker container started from `/root/llmbot`
-- Docker Compose command on server: `docker-compose`
+- Prefer `docker compose` on the replacement host; the former host used `docker-compose`.
+- Fresh-host recovery runbook: `docs/DEPLOYMENT.md`.
 
 # Repository Guidance
 

@@ -41,9 +41,12 @@ context.
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
 | `scripts/scrub_logs.py` | Standalone in-place credential redaction for existing text logs; loads secret values from a dotenv file without printing them. |
+| `scripts/telegram_auth.py` | Isolated interactive user-session setup; hidden code/2FA input, no bot polling or scheduler startup. |
+| `scripts/deploy_check.py` | Non-polling preflight for config, Telethon identity, Bot API getMe, OAuth/model catalog, and optional completed inference. |
 | `tests/test_bot_llm_api.py` | ChatGPT retries, parser, processor, history, unread, and scheduled-job behavior. |
 | `tests/test_chatgpt_auth.py` | Stable deployment-host identity and returning-account validation for OAuth setup. |
 | `tests/test_chatgpt_runtime.py` | OAuth credential, refresh, model-list, payload, and SSE contracts. |
+| `tests/test_deployment_tools.py` | Isolated session setup, cleanup on failure, non-interactive rejection, and preflight auth/model checks. |
 | `tests/test_bot_llm_commands.py` | Bot command handlers and top-level message orchestration. |
 | `tests/test_bot_utils.py` | Intent guards, formatting, folders, Telethon helpers, scheduler initialization, and other utilities. |
 | `tests/test_config.py` | Environment loading and configuration validation. |
@@ -411,6 +414,14 @@ Use `env.example` as the variable inventory. Important path behavior:
 - deployment-specific server details live in root `AGENTS.md`.
 
 The supported Python range is 3.11-3.13. The Docker image uses Python 3.12.
+
+Fresh-host deployment is described in `docs/DEPLOYMENT.md`. Docker includes
+`scripts/telegram_auth.py` and `scripts/deploy_check.py`. Run both with the main
+service stopped and the same Compose mounts/environment. The login utility is
+independent of `bot.py`'s short startup timeout and never starts summaries. The
+preflight utility does not import `bot.py`, polls no updates, reads no history,
+and executes no schedules. It may rotate OAuth credentials; avoid concurrent
+credential consumers during migration.
 
 `setup.sh` validates and repairs `venv`, reuses a healthy supported venv
 interpreter when no compatible system Python is on `PATH`, supports `--dev` and

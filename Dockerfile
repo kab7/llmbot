@@ -10,7 +10,8 @@ COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py chatgpt_runtime.py config.py schedule_runtime.py ./
+COPY scripts/telegram_auth.py scripts/deploy_check.py ./scripts/
 
-RUN python -m compileall -q bot.py chatgpt_runtime.py config.py schedule_runtime.py
+RUN python -m compileall -q bot.py chatgpt_runtime.py config.py schedule_runtime.py scripts
 
 CMD ["python", "bot.py"]

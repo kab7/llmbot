@@ -15,6 +15,9 @@ Python code and tests.
 
 ### Added
 
+- Fresh-host/disaster-recovery runbook, isolated hidden-input Telegram session
+  setup, and non-polling deployment checks included in the Docker image.
+
 - Official Sign in with ChatGPT OAuth authorization through
   `scripts/chatgpt_auth.py`: dynamic client registration, loopback callback,
   PKCE/state/nonce, ID-token validation, required plan scope, and owner-only

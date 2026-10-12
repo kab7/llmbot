@@ -85,6 +85,16 @@ the saved refresh token automatically.
 
 ## Docker
 
+Fresh host / server-loss recovery: [deployment runbook](docs/DEPLOYMENT.md).
+Create or verify the Telegram user session before detached startup:
+
+```bash
+docker compose build
+docker compose run --rm --no-deps bot python scripts/telegram_auth.py
+docker compose run --rm --no-deps bot python scripts/deploy_check.py --smoke-test
+docker compose up -d --no-build
+```
+
 ```bash
 docker-compose build
 docker-compose up -d

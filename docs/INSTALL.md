@@ -1,5 +1,9 @@
 # Installation, build, and recovery
 
+For a replacement Docker server after host loss, use
+[DEPLOYMENT.md](DEPLOYMENT.md), including separate Telegram authorization,
+ChatGPT reauthorization, schedule recovery, and startup verification.
+
 ## Supported runtime
 
 - Python 3.11, 3.12, or 3.13.
@@ -130,6 +134,12 @@ The complete variable inventory and defaults are in `env.example`.
 
 The first Telethon login can require interactive input. Complete it in an
 interactive terminal before relying on an unattended service or container.
+For Docker, after building and while the main bot is stopped:
+
+```bash
+docker compose run --rm --no-deps bot python scripts/telegram_auth.py
+docker compose run --rm --no-deps bot python scripts/deploy_check.py --smoke-test
+```
 
 Run `/llmconfig` and `/models` after startup to verify the ChatGPT OAuth session
 and the account-specific model catalog.
@@ -142,7 +152,7 @@ never commit them, and do not describe them as application-encrypted secrets.
 Validate and build:
 
 ```bash
-docker compose config
+docker compose config --quiet
 docker compose build
 docker compose up -d
 ```
@@ -150,7 +160,7 @@ docker compose up -d
 Legacy production command:
 
 ```bash
-docker-compose config
+docker-compose config --quiet
 docker-compose build
 docker-compose up -d
 ```
@@ -161,6 +171,7 @@ The Dockerfile:
 - installs only runtime requirements;
 - copies all four runtime Python modules (`bot`, `chatgpt_runtime`, `config`,
   and `schedule_runtime`);
+- includes isolated Telegram-login and deployment-check utilities;
 - runs `compileall` during build;
 - starts `python bot.py`.
 
@@ -227,6 +238,7 @@ the container. Do not paste an individual token into the bot.
 
 ### First container run cannot authorize Telethon
 
-Run it attached so the login code and 2FA prompt are visible, or create the
-session in a controlled interactive environment using the same `SESSION_NAME`
-path.
+With the main service stopped, run
+`docker compose run --rm --no-deps bot python scripts/telegram_auth.py`
+from an interactive terminal. It uses the same persisted `SESSION_NAME` path
+and does not start polling or scheduled summaries.
