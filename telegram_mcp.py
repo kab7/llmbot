@@ -6,7 +6,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from telegram_access import AccessError, bridge_call
+from telegram_rpc import AccessError, bridge_call
 
 INSTRUCTIONS = (
     "Telegram access as the owner's PERSONAL account. Send only on an explicit human request. "
@@ -20,14 +20,22 @@ INSTRUCTIONS = (
 )
 
 
-def create_server(socket_path):
+def create_server(socket_path=None, *, transport=None):
+    """Initialize locally without contacting SSH/Telegram; reconnect per tool call."""
+    if transport is None:
+        if socket_path is None:
+            raise ValueError("A local socket or SSH transport is required")
+
+        async def transport(operation, arguments):
+            return await bridge_call(socket_path, operation, arguments)
+
     server = FastMCP("llmbot Telegram", instructions=INSTRUCTIONS, log_level="WARNING")
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
     write = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
     async def call(operation, **arguments):
         try:
-            return await bridge_call(socket_path, operation, arguments)
+            return await transport(operation, arguments)
         except AccessError as error:
             wait = f" Retry after {error.retry_after}s." if error.retry_after is not None else ""
             raise ToolError(f"{error.code}: {error}{wait}") from None

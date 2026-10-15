@@ -1,0 +1,2 @@
+# Local Codex MCP facade only. Never install this into the production bot image.
+mcp==1.30.0

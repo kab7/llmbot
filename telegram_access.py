@@ -20,28 +20,12 @@ from uuid import UUID
 from telethon import errors, utils
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import Channel, Chat, User
-
-logger = logging.getLogger(__name__)
-MAX_REQUEST_BYTES = 65536
-MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-RPC_TIMEOUT = 60
-OPERATIONS = (
-    "search_contacts", "search_chats", "resolve_chat", "read_history",
-    "send_message", "get_send_status",
+from telegram_rpc import (
+    AccessError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, OPERATIONS, RPC_TIMEOUT,
+    bridge_call,
 )
 
-
-class AccessError(Exception):
-    def __init__(self, code, message, retry_after=None):
-        super().__init__(message)
-        self.code = code
-        self.retry_after = retry_after
-
-    def as_dict(self):
-        result = {"code": self.code, "message": str(self)}
-        if self.retry_after is not None:
-            result["retry_after_seconds"] = self.retry_after
-        return result
+logger = logging.getLogger(__name__)
 
 
 def _integer(value, name, minimum, maximum):
@@ -363,32 +347,6 @@ class TelegramBridge:
                     await writer.drain()
                 except (ConnectionError, BrokenPipeError):
                     pass
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except ConnectionError:
-                pass
-
-
-async def bridge_call(socket_path, operation, arguments):
-    writer = None
-    try:
-        async with asyncio.timeout(RPC_TIMEOUT + 5):
-            reader, writer = await asyncio.open_unix_connection(socket_path, limit=MAX_RESPONSE_BYTES)
-            payload = json.dumps({"operation": operation, "arguments": arguments}, ensure_ascii=False).encode() + b"\n"
-            if len(payload) > MAX_REQUEST_BYTES:
-                raise AccessError("invalid_arguments", "Request too large")
-            writer.write(payload)
-            await writer.drain()
-            response = json.loads(await reader.readline())
-            if "error" in response:
-                error = response["error"]
-                raise AccessError(error["code"], error["message"], error.get("retry_after_seconds"))
-            return response["result"]
-    except (OSError, TimeoutError, ValueError, KeyError):
-        raise AccessError("unavailable", "Telegram bridge unavailable. For sends check get_send_status with the SAME request_id; never blindly resend.") from None
-    finally:
-        if writer is not None:
             writer.close()
             try:
                 await writer.wait_closed()

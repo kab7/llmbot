@@ -11,6 +11,8 @@ source = [
   "schedule_runtime",
   "telegram_access",
   "telegram_mcp",
+  "telegram_rpc",
+  "telegram_ssh",
 ]
 
 [tool.coverage.report]

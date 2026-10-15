@@ -42,8 +42,11 @@ context.
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
 | `telegram_access.py` | Personal Telegram operations, persistent idempotency receipts and bounded owner-only Unix RPC; uses the existing client, never opens a session. |
-| `telegram_mcp.py`, `scripts/telegram_mcp.py` | Six-tool MCP stdio facade and entrypoint; talks only to the Unix bridge, never imports bot/config or owns credentials. |
+| `telegram_mcp.py`, `scripts/telegram_mcp.py` | LOCAL six-tool MCP stdio facade/entrypoint; no SSH at discovery/idle, no bot/config/Telethon imports. Never ship it in the bot image. |
+| `telegram_ssh.py` | Bounded per-call SSH transport from local MCP, stdin-only payloads, no replay, reconnects on the next call. |
+| `telegram_rpc.py`, `scripts/telegram_rpc.py` | Standard-library-only bounded wire client and one-shot server helper. No SDK, session or config. |
 | `tests/test_telegram_mcp.py` | Search/history/send semantics, uncertainty/deduplication, socket permissions, real MCP protocol, stdio and generated contract. |
+| `tests/test_telegram_ssh.py` | SSH/stdio recovery, one-shot helper, restart, timeout/cancellation cleanup, dependency and payload isolation. |
 | `scripts/scrub_logs.py` | Standalone in-place credential redaction for existing text logs; loads secret values from a dotenv file without printing them. |
 | `scripts/telegram_auth.py` | Isolated interactive user-session setup; hidden code/2FA input, no bot polling or scheduler startup. |
 | `scripts/deploy_check.py` | Non-polling preflight for config, Telethon identity, Bot API getMe, OAuth/model catalog, and optional completed inference. |
@@ -447,7 +450,7 @@ python -m pytest
 
 `pyproject.toml` enables terminal missing-line coverage and enforces 50% across
 `bot`, `chatgpt_runtime`, `config`, `schedule_runtime`, `telegram_access`, and
-`telegram_mcp`.
+the client modules `telegram_mcp`, `telegram_rpc`, and `telegram_ssh`.
 
 Do not hand-edit a verification snapshot here. Report the complete suite result
 from the current change in the handoff.
@@ -508,9 +511,12 @@ muted, archived, legacy Telethon filter results, timeouts, and error wrapping.
 ## 12. Telegram MCP invariants
 
 See [TELEGRAM_MCP.md](TELEGRAM_MCP.md) for the full transport/tool/runbook contract.
-Compose enables an internal socket, not a TCP port. Codex launches the facade via
-SSH plus `docker exec -i`; SSH authenticates it. Never open another Telethon session
-from the facade or run bot polling from it. Preserve Unix parent mode 0700/socket
+Compose enables an internal socket, not a TCP port. Codex launches the facade
+LOCALLY and each tool call opens a short SSH connection to a stdlib-only helper
+via `docker exec -i`. Discovery/idle MCP sessions never contact the server. Never
+run the SDK/facade in the production container (parallel remote SDK workers caused
+host OOM). Keep client SDK requirements separate from the bot image. Never open
+another Telethon session from the facade or run polling from it. Preserve Unix parent mode 0700/socket
 0600 and the RPC operation allowlist. Never log tool arguments/results or raw
 exception messages: they may contain personal data. Telegram content is untrusted.
 
@@ -522,10 +528,19 @@ never resends; changed arguments conflict. Network/cancellation/crash ambiguity
 is exposed as pending/unknown and must be reconciled, not replayed automatically.
 Keep `TELEGRAM_MCP_STATE_FILE` persistent and excluded from Git/build context.
 
+Transport failures must return tool errors without closing the local MCP session.
+The next tool call uses a fresh SSH connection; never replay an interrupted write.
+Keep tool arguments only on stdin (not argv/logs); quote the fixed remote command,
+validate host/container paths, enforce strict host keys, bound concurrency, time,
+stdout/stderr sizes and reap SSH on timeout/cancellation. The one-shot helper must
+run under `python -I -S` with no third-party imports and bound idle stdin lifetime.
+
 When adding a tool, update the RPC allowlist, facade annotation/description,
 validation, generated `docs/schemas/telegram-mcp-tools.json`, tests and runbook.
 Regenerate the tools list from `create_server(...).list_tools()`; the exact JSON
 snapshot test prevents drift. MCP SDK upgrades are pinned and require this check.
+Transport-only changes intentionally preserve this tools contract; test it rather
+than inventing schema changes. Add recovery regression tests in the same change.
 
 ## 13. Known constraints
 

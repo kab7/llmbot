@@ -21,7 +21,7 @@ API key or alternate provider is supported.
 - Restrict every Telegram handler to `ADMIN_USER_ID`.
 - Discover models available to the signed-in ChatGPT account and select one
   globally or for a single request.
-- Optional SSH-protected Telegram MCP for Codex: search contacts/dialogs, read
+- Optional LOCAL Telegram MCP for Codex with short-lived SSH calls: search contacts/dialogs, read
   history without marking read, and send messages as the personal account using
   the bot's existing session. See [Telegram MCP](docs/TELEGRAM_MCP.md).
 

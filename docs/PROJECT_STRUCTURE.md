@@ -14,9 +14,12 @@ llmbot/
 ├── schedule_runtime.py
 ├── telegram_access.py
 ├── telegram_mcp.py
+├── telegram_rpc.py
+├── telegram_ssh.py
 ├── pyproject.toml
 ├── requirements.txt
 ├── requirements-dev.txt
+├── requirements-mcp.txt
 ├── setup.sh
 ├── start.sh
 ├── Dockerfile
@@ -27,6 +30,7 @@ llmbot/
 │   ├── telegram_auth.py
 │   ├── deploy_check.py
 │   ├── telegram_mcp.py
+│   ├── telegram_rpc.py
 │   └── scrub_logs.py
 ├── docs/
 │   ├── AI_DEVELOPMENT.md
@@ -54,6 +58,7 @@ llmbot/
     ├── test_schedule_runtime.py
     ├── test_scrub_logs.py
     ├── test_telegram_mcp.py
+    ├── test_telegram_ssh.py
     └── test_repository_contracts.py
 ```
 
@@ -77,8 +82,11 @@ htmlcov/
 ### `telegram_access.py`, `telegram_mcp.py`
 
 The optional personal-account MCP interface shares the running bot's Telethon
-client via an owner-only Unix RPC socket. The MCP stdio facade is launched through
-SSH/Docker and never opens a session or imports the bot. Six tools cover contact
+client via an owner-only Unix RPC socket. The MCP stdio facade runs LOCALLY and
+never opens a session or imports the bot/Telethon. `telegram_ssh.py` opens a fresh
+short SSH connection per tool call to `scripts/telegram_rpc.py`, a one-shot
+stdlib-only server helper using `telegram_rpc.py`. The SDK and idle MCP workers
+never run in the production container. Six tools cover contact
 and dialog search, exact peer resolution, paginated read-only history, plain-text
 send and persistent send-status lookup. `SendJournal` reserves a UUID before a
 send and never replays uncertain attempts. See [TELEGRAM_MCP.md](TELEGRAM_MCP.md).

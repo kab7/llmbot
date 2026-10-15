@@ -16,6 +16,10 @@ before installing OS-specific Docker packages.
 - No incoming application port is required: the bot uses Telegram polling and
   outbound Telegram/OpenAI connections. SSH also transports the optional
   [Telegram MCP](TELEGRAM_MCP.md); its Unix socket exists only inside the container.
+- MCP runs locally on the Codex computer. The server image has no MCP SDK and runs
+  only a one-shot stdlib RPC helper per SSH call. Never launch the old persistent
+  remote facade: parallel copies caused host OOM. Keep credentials/session/jobs
+  in the bot container's existing persistent volume.
 
 The former server `146.103.100.159` was reported unavailable on 2026-10-13.
 Do not treat it as a working deployment destination. The replacement deployment

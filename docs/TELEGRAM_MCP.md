@@ -8,8 +8,9 @@ subscription/API key. The ordinary bot and all persisted schedules remain active
 ## Architecture and trust boundary
 
 ```text
-Codex -> SSH (key authentication) -> docker exec -i llmbot
-      -> scripts/telegram_mcp.py (MCP stdio facade, no Telegram session)
+Codex -> LOCAL scripts/telegram_mcp.py (persistent MCP stdio facade)
+      -> one short SSH connection per tool call -> docker exec -i llmbot
+      -> scripts/telegram_rpc.py (one-shot stdlib-only helper, then exits)
       -> owner-only Unix socket -> running bot's TelegramAccess -> existing Telethon client
 ```
 
@@ -23,8 +24,19 @@ This transport is for local Codex clients with SSH access, not ChatGPT web/cloud
 `bot.py` owns the only Telethon client/session and starts `TelegramBridge` after
 polling and scheduler initialization. The facade never imports `bot` or `config`,
 opens a Telegram session, consumes bot updates, or runs schedules. Several MCP
-clients can connect without opening competing sessions. Tool failure is isolated
-from polling/jobs; bridge startup failure is logged and the bot continues.
+clients can connect without opening competing sessions. The MCP SDK runs only on
+the computer running Codex. Tool discovery/idle sessions start no SSH connection
+or remote process. The Docker image contains neither the SDK nor the MCP facade.
+Only a bounded, short-lived standard-library helper is started for a tool call.
+Tool failure is isolated from polling/jobs; bridge startup failure is logged and
+the bot continues.
+
+Do not restore the old `ssh ... docker exec ... scripts/telegram_mcp.py` launcher.
+It ran a heavyweight remote SDK process per Codex session; concurrent sessions
+exhausted the 956 MiB host on 2026-10-16, killing the bot and leaving clients with
+`Transport closed`. Local MCP plus per-call SSH avoids that persistent memory cost.
+An SSH error is now a tool error; the same MCP session can make a new connection
+on the next call, including after a bot restart. No writes are automatically retried.
 
 Compose enables `/tmp/llmbot-mcp/control.sock` inside the existing bot container.
 The dedicated parent directory must be owned by the process user with mode 0700;
@@ -35,11 +47,15 @@ socket path to enable it, and persist `TELEGRAM_MCP_STATE_FILE` securely.
 
 ## Connect on the computer running Codex
 
-Confirm non-interactive SSH works and deploy the current Docker image first:
+Deploy the current Docker image first. On the computer running Codex, install
+local dependencies (the development setup includes `requirements-mcp.txt`), then
+replace the old `telegram` configuration using absolute paths:
 
 ```bash
-ssh -o BatchMode=yes root@195.63.141.49 true
-codex mcp add telegram -- ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 root@195.63.141.49 docker exec -i llmbot python scripts/telegram_mcp.py --socket /tmp/llmbot-mcp/control.sock
+cd ~/Projects/llmbot
+./setup.sh --dev
+ssh -o BatchMode=yes -o StrictHostKeyChecking=yes root@195.63.141.49 true
+codex mcp add telegram -- "$PWD/venv/bin/python" "$PWD/scripts/telegram_mcp.py" --ssh-host root@195.63.141.49
 codex mcp get telegram
 ```
 
@@ -47,21 +63,42 @@ No TTY (`-t`) may be allocated: stdout carries only MCP JSON-RPC. Keep diagnosti
 output on stderr. The SSH key must be available without an interactive password
 prompt. Reconnect/reopen a Codex task if its tool catalog was initialized before
 configuration; adding a server does not prove the running task has reloaded it.
+Replace an already closed old transport by restarting/reconnecting Codex once;
+subsequent per-call SSH failures do not require restarting MCP.
+
+For a separate minimal client environment, install only `requirements-mcp.txt`;
+the local facade imports no Telethon, `bot`, `config`, or session loader. Keep its
+Python/script paths stable. Client-only CLI options: `--ssh-host` (required in
+production), `--ssh-port` (default 22), `--container` (default `llmbot`), and
+`--remote-socket` (default `/tmp/llmbot-mcp/control.sock`). `--socket` is a mutually
+exclusive direct local-socket mode for development/tests, not server deployment.
 
 Equivalent Codex configuration (preserve unrelated settings):
 
 ```toml
 [mcp_servers.telegram]
-command = "ssh"
-args = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "root@195.63.141.49", "docker", "exec", "-i", "llmbot", "python", "scripts/telegram_mcp.py", "--socket", "/tmp/llmbot-mcp/control.sock"]
-startup_timeout_sec = 30
-tool_timeout_sec = 90
+command = "/ABS/PATH/llmbot/venv/bin/python"
+args = ["/ABS/PATH/llmbot/scripts/telegram_mcp.py", "--ssh-host", "root@195.63.141.49"]
+startup_timeout_sec = 10
+tool_timeout_sec = 60
 ```
 
 Codex supports command-launched stdio MCP and shares host MCP configuration among
 local clients: [official configuration documentation](https://developers.openai.com/codex/mcp).
-The SDK is pinned to its supported 1.x API (`mcp==1.30.0`); upgrading across major
-versions requires regenerating/testing the tools contract.
+The LOCAL SDK is pinned to its supported 1.x API (`mcp==1.30.0`) separately in
+`requirements-mcp.txt`; upgrading across major versions requires regenerating/
+testing the tools contract. Production `requirements.txt` deliberately omits it.
+
+The transport has at most two in-flight requests per local MCP process, each
+bounded to 50 seconds including queueing/SSH; the helper bounds its RPC call to
+40 seconds and its whole lifetime (including idle stdin) to 48 seconds. SSH uses
+an 8-second connect timeout and strict known-host/key authentication. No TTY,
+interactive authentication, connection sharing, or shell interpolation of tool
+arguments is allowed. JSON arguments, including message text, travel on encrypted
+stdin, never command-line arguments. Stdout/stderr sizes are bounded and raw SSH
+diagnostics are not echoed into tool errors. Timeout/cancellation kills the local
+SSH subprocess; the remote one-shot helper exits by its own deadline. An already
+dispatched send can still finish in the bot: reconcile its durable receipt.
 
 ## Tool contract
 
@@ -125,8 +162,12 @@ context. Operations log no contacts, message text, history or credential values.
 ## Verification and rollback
 
 Run `./setup.sh --dev`, focused tests, then `venv/bin/python -m pytest`.
-Tests use synthetic peers/messages, real temporary Unix sockets and MCP sessions;
-they never access a real Telegram account. Live checks should resolve `me`, search
+Tests use synthetic peers/messages, real temporary Unix sockets, one-shot helper
+subprocesses and MCP sessions; they never access a real Telegram account. They
+cover SSH failure then success in the SAME MCP session, bot bridge restart,
+timeouts/cancellation cleanup, bounded output, malformed input, no automatic send
+retry, shell-safe stdin-only payloads and SDK-free server dependencies.
+Live checks should resolve `me`, search
 with a bounded page, and read minimal history without exposing private data in
 shared output. Test writes only in Saved Messages, never to arbitrary contacts.
 
@@ -134,7 +175,10 @@ On deployment, back up runtime state and tag the previous image, build while the
 old container serves traffic, then recreate only Compose service `bot`. Verify
 polling readiness, the expected restored schedules, Unix bridge readiness and MCP
 initialize/tools/list plus tool calls. Preserve unrelated VPN/proxy containers.
-No schema migration to existing schedules or Telethon session is required.
+No schema migration to existing schedules or Telethon session is required. Confirm
+no `scripts/telegram_mcp.py` workers and no `mcp` package exist in the container.
+Idle Codex clients must consume no server worker memory. Check one-shot helper
+peak RSS and exit after a request, and compare restart count before/after probes.
 
 To disable MCP without changing the bot, set `TELEGRAM_MCP_SOCKET` to an empty
 string in Compose and recreate `bot`. To disconnect Codex, run

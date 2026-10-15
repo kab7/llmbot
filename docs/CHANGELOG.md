@@ -42,6 +42,15 @@ Python code and tests.
 
 ### Changed
 
+- Moved the Telegram MCP SDK/facade to the Codex computer after concurrent remote
+  SDK workers exhausted the small server. Each tool call now uses a bounded,
+  short-lived SSH connection and stdlib-only RPC helper; discovery/idle uses no
+  remote worker. SSH failure/bot restart no longer closes local MCP stdio.
+- Separated local `requirements-mcp.txt` from production dependencies; the Docker
+  image contains no MCP SDK/facade. Added reconnect, timeout, cancellation, wire
+  validation, dependency isolation and no-replay regression tests. Tool schemas
+  and persistent bot/session/schedule/send-journal contracts are unchanged.
+
 - ChatGPT Plus/Pro plan usage is now the only LLM route.
 - All inference uses the public `POST /v1/responses` endpoint with `store=false`
   and `stream=true`; preview-unsupported output/token sampling fields are omitted.

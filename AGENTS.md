@@ -10,6 +10,10 @@
 - The primary server also runs VPN and Telegram-proxy containers. Scope deployment
   commands to llmbot; preserve those unrelated services.
 - Fresh-host recovery runbook: `docs/DEPLOYMENT.md`.
+- Telegram MCP runs on the Codex computer, not on this small server. Use
+  `scripts/telegram_mcp.py --ssh-host root@195.63.141.49` locally; server-side
+  `scripts/telegram_rpc.py` is a one-shot stdlib helper. Never install/run parallel
+  MCP SDK workers in the bot container (they previously caused host OOM).
 
 # Repository Guidance
 

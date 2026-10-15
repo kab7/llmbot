@@ -162,11 +162,15 @@ def test_dockerfile_copies_every_runtime_module():
         "config.py",
         "schedule_runtime.py",
         "telegram_access.py",
-        "telegram_mcp.py",
+        "telegram_rpc.py",
     ):
         assert module in dockerfile
-    for utility in ('scripts/telegram_auth.py', 'scripts/deploy_check.py', 'scripts/telegram_mcp.py'):
+    for utility in ('scripts/telegram_auth.py', 'scripts/deploy_check.py', 'scripts/telegram_rpc.py'):
         assert utility in dockerfile
+    assert "telegram_mcp.py" not in dockerfile
+    assert "telegram_ssh.py" not in dockerfile
+    assert "requirements-mcp.txt" not in dockerfile
+    assert not re.search(r"^mcp[=<>]", (ROOT / "requirements.txt").read_text(), re.M)
 
 
 def test_oauth_credentials_are_excluded_from_git_and_docker_context():
