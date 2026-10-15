@@ -19,6 +19,8 @@ def test_config_reads_environment(monkeypatch):
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "17")
     monkeypatch.setenv("COMBINED_LLM_REQUEST_TIMEOUT_SECONDS", "71")
     monkeypatch.setenv("LLM_MAX_RETRIES", "4")
+    monkeypatch.setenv("TELEGRAM_MCP_SOCKET", "/tmp/mcp/control.sock")
+    monkeypatch.setenv("TELEGRAM_MCP_STATE_FILE", "/data/mcp.db")
 
     cfg = _reload_config()
 
@@ -32,6 +34,8 @@ def test_config_reads_environment(monkeypatch):
     assert cfg.LLM_REQUEST_TIMEOUT_SECONDS == 17
     assert cfg.COMBINED_LLM_REQUEST_TIMEOUT_SECONDS == 71
     assert cfg.LLM_MAX_RETRIES == 4
+    assert cfg.TELEGRAM_MCP_SOCKET == "/tmp/mcp/control.sock"
+    assert cfg.TELEGRAM_MCP_STATE_FILE == "/data/mcp.db"
     assert "валидным JSON" in cfg.PARSER_PROMPT
     assert "историей Telegram чатов" in cfg.PROCESSOR_PROMPT
 
@@ -40,11 +44,15 @@ def test_config_defaults_to_auto_chatgpt_model(monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda: False)
     monkeypatch.delenv("CHATGPT_MODEL", raising=False)
     monkeypatch.delenv("CHATGPT_CREDENTIALS_FILE", raising=False)
+    monkeypatch.delenv("TELEGRAM_MCP_SOCKET", raising=False)
+    monkeypatch.delenv("TELEGRAM_MCP_STATE_FILE", raising=False)
 
     cfg = _reload_config()
 
     assert cfg.CHATGPT_MODEL == "auto"
     assert cfg.CHATGPT_CREDENTIALS_FILE == "chatgpt_credentials.json"
+    assert cfg.TELEGRAM_MCP_SOCKET == ""
+    assert cfg.TELEGRAM_MCP_STATE_FILE == "telegram_mcp.db"
 
 
 def test_combined_timeout_cannot_be_shorter_than_regular_timeout(monkeypatch):

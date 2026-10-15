@@ -1,0 +1,247 @@
+{
+  "description": "Code-derived MCP tools/list contract. Regenerate from telegram_mcp.create_server; do not hand-edit.",
+  "tools": [
+    {
+      "name": "search_contacts",
+      "description": "Find personal contacts by name/username. Empty query lists contacts. No phone numbers returned.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "search_contactsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "search_contactsDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "search_chats",
+      "description": "Search joined dialogs by name/username; use next_offset for more matches, null means complete.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "title": "search_chatsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "search_chatsDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "resolve_chat",
+      "description": "Resolve an exact numeric peer id, @username, or 'me' (Saved Messages). No fuzzy sending.",
+      "inputSchema": {
+        "properties": {
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "peer"
+        ],
+        "title": "resolve_chatArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "resolve_chatDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "read_history",
+      "description": "Read up to 100 messages, chronological within page. Dates: ISO 8601 with timezone, exclusive bounds.\n\n        Use next_offset_id to page backwards; null means exhausted. Optional query searches within this chat.\n        Returns text, sender, media type, reply id and original-post links where available. Never marks read.\n        ",
+      "inputSchema": {
+        "properties": {
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "limit": {
+            "default": 30,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset_id": {
+            "default": 0,
+            "title": "Offset Id",
+            "type": "integer"
+          },
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Before"
+          }
+        },
+        "required": [
+          "peer"
+        ],
+        "title": "read_historyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "read_historyDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "send_message",
+      "description": "Send literal plain text as the owner. Requires explicit user intent and an unambiguous recipient.\n\n        request_id: fresh UUID for each intended send; SAME UUID+arguments on retry returns stored receipt.\n        Max 4096 UTF-16 units; no auto-splitting, Markdown parsing or link previews. reply_to is optional.\n        Only status=sent confirms success. Pending/unknown requires history reconciliation, NOT a new key.\n        ",
+      "inputSchema": {
+        "properties": {
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply To"
+          }
+        },
+        "required": [
+          "peer",
+          "text",
+          "request_id"
+        ],
+        "title": "send_messageArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "send_messageDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_send_status",
+      "description": "Read durable send receipt by UUID: sent, failed, pending, unknown or not_found. Does not resend.",
+      "inputSchema": {
+        "properties": {
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "get_send_statusArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "get_send_statusDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    }
+  ]
+}

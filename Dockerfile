@@ -9,9 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py chatgpt_runtime.py config.py schedule_runtime.py ./
-COPY scripts/telegram_auth.py scripts/deploy_check.py ./scripts/
+COPY bot.py chatgpt_runtime.py config.py schedule_runtime.py telegram_access.py telegram_mcp.py ./
+COPY scripts/telegram_auth.py scripts/deploy_check.py scripts/telegram_mcp.py ./scripts/
 
-RUN python -m compileall -q bot.py chatgpt_runtime.py config.py schedule_runtime.py scripts
+RUN python -m compileall -q bot.py chatgpt_runtime.py config.py schedule_runtime.py telegram_access.py telegram_mcp.py scripts
 
 CMD ["python", "bot.py"]

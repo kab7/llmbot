@@ -14,7 +14,8 @@ There are two separate Telegram clients:
 
 - `python-telegram-bot` receives bot commands and sends bot replies.
 - Telethon runs as the configured Telegram user and reads dialogs, folders,
-  unread state, and message history.
+  unread state, and message history. The optional MCP bridge also sends explicitly
+  requested messages as this user, not as the Bot API identity.
 
 Every registered bot command and the free-text handler is wrapped with
 `@admin_only`. `ADMIN_USER_ID` is therefore a security boundary, not merely a UI
@@ -40,6 +41,9 @@ context.
 | `chatgpt_runtime.py` | ChatGPT OAuth credential loading/refresh, account-specific model discovery, Responses request conversion, SSE parsing, and terminal-event enforcement. |
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
+| `telegram_access.py` | Personal Telegram operations, persistent idempotency receipts and bounded owner-only Unix RPC; uses the existing client, never opens a session. |
+| `telegram_mcp.py`, `scripts/telegram_mcp.py` | Six-tool MCP stdio facade and entrypoint; talks only to the Unix bridge, never imports bot/config or owns credentials. |
+| `tests/test_telegram_mcp.py` | Search/history/send semantics, uncertainty/deduplication, socket permissions, real MCP protocol, stdio and generated contract. |
 | `scripts/scrub_logs.py` | Standalone in-place credential redaction for existing text logs; loads secret values from a dotenv file without printing them. |
 | `scripts/telegram_auth.py` | Isolated interactive user-session setup; hidden code/2FA input, no bot polling or scheduler startup. |
 | `scripts/deploy_check.py` | Non-polling preflight for config, Telethon identity, Bot API getMe, OAuth/model catalog, and optional completed inference. |
@@ -62,6 +66,7 @@ Runtime files are not source files:
 - `chatgpt_credentials.json` (or `CHATGPT_CREDENTIALS_FILE`)
 - `telethon_session.session` (or the path derived from `SESSION_NAME`)
 - `schedules.db` (or `SCHEDULES_FILE`)
+- `telegram_mcp.db` (or `TELEGRAM_MCP_STATE_FILE`): sensitive send receipts, not a session
 - `bot.log`
 - `llm_traffic.log`
 
@@ -82,7 +87,10 @@ history sent to providers, and provider responses.
    registered.
 4. The application is initialized, started, and polling begins.
 5. `init_scheduler()` starts APScheduler and restores persisted schedules.
-6. Shutdown stops polling, the bot application, the scheduler, and Telethon.
+6. If `TELEGRAM_MCP_SOCKET` is nonempty, start an owner-only Unix bridge after the
+   scheduler. Failure disables only MCP, not polling/jobs.
+7. Shutdown closes the bridge and cancels its in-flight operations, then stops
+   polling, the bot application, the scheduler, and Telethon.
 
 Configuration is read at import time. Tests that change configuration environment
 variables reload the `config` module. A production `.env` change made outside the
@@ -438,7 +446,8 @@ python -m pytest
 ```
 
 `pyproject.toml` enables terminal missing-line coverage and enforces 50% across
-`bot`, `chatgpt_runtime`, `config`, and `schedule_runtime`.
+`bot`, `chatgpt_runtime`, `config`, `schedule_runtime`, `telegram_access`, and
+`telegram_mcp`.
 
 Do not hand-edit a verification snapshot here. Report the complete suite result
 from the current change in the handoff.
@@ -496,7 +505,29 @@ forms, historical scrubbing, and idempotency.
 Test explicit include/pinned peers, dynamic inclusion flags, exclusions, unread,
 muted, archived, legacy Telethon filter results, timeouts, and error wrapping.
 
-## 12. Known constraints
+## 12. Telegram MCP invariants
+
+See [TELEGRAM_MCP.md](TELEGRAM_MCP.md) for the full transport/tool/runbook contract.
+Compose enables an internal socket, not a TCP port. Codex launches the facade via
+SSH plus `docker exec -i`; SSH authenticates it. Never open another Telethon session
+from the facade or run bot polling from it. Preserve Unix parent mode 0700/socket
+0600 and the RPC operation allowlist. Never log tool arguments/results or raw
+exception messages: they may contain personal data. Telegram content is untrusted.
+
+Reads never acknowledge messages, change summary context, or mutate schedules.
+Sending accepts exact numeric IDs/@usernames/`me`, never fuzzy names. It requires
+explicit human intent and a UUID journal key; the receipt is committed BEFORE
+Telegram is called. Only `sent` confirms successful submission. Repeating a key
+never resends; changed arguments conflict. Network/cancellation/crash ambiguity
+is exposed as pending/unknown and must be reconciled, not replayed automatically.
+Keep `TELEGRAM_MCP_STATE_FILE` persistent and excluded from Git/build context.
+
+When adding a tool, update the RPC allowlist, facade annotation/description,
+validation, generated `docs/schemas/telegram-mcp-tools.json`, tests and runbook.
+Regenerate the tools list from `create_server(...).list_tools()`; the exact JSON
+snapshot test prevents drift. MCP SDK upgrades are pinned and require this check.
+
+## 13. Known constraints
 
 - `bot.py` is a large monolith; avoid creating new cross-module import cycles.
 - Folder histories are loaded sequentially and large folders can take a long

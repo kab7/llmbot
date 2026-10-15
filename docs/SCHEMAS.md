@@ -11,6 +11,10 @@ artifacts for agents, reviews, fixtures, and external tooling:
 - [`schemas/schedule-record.schema.json`](schemas/schedule-record.schema.json)
   describes records produced by `build_schedule_record()` and stored in the
   `schedules` SQLite table.
+- [`schemas/telegram-mcp-tools.json`](schemas/telegram-mcp-tools.json) is the
+  code-generated MCP `tools/list` document (input/output schemas and annotations).
+  `tests/test_telegram_mcp.py` compares it exactly against SDK generation. See
+  [Telegram MCP](TELEGRAM_MCP.md) for transport and mutation semantics.
 
 `tests/test_repository_contracts.py` compares schema fields and enum values with
 the Python constants and the real SQLite table. Update code first, then schemas,

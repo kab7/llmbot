@@ -44,6 +44,8 @@ EXPECTED_ENV_KEYS = {
     "LLM_TRAFFIC_LOG_BACKUP_COUNT",
     "SESSION_NAME",
     "SCHEDULES_FILE",
+    "TELEGRAM_MCP_SOCKET",
+    "TELEGRAM_MCP_STATE_FILE",
     "ADMIN_USER_ID",
 }
 
@@ -159,9 +161,11 @@ def test_dockerfile_copies_every_runtime_module():
         "chatgpt_runtime.py",
         "config.py",
         "schedule_runtime.py",
+        "telegram_access.py",
+        "telegram_mcp.py",
     ):
         assert module in dockerfile
-    for utility in ('scripts/telegram_auth.py', 'scripts/deploy_check.py'):
+    for utility in ('scripts/telegram_auth.py', 'scripts/deploy_check.py', 'scripts/telegram_mcp.py'):
         assert utility in dockerfile
 
 
@@ -169,6 +173,8 @@ def test_oauth_credentials_are_excluded_from_git_and_docker_context():
     for filename in (".gitignore", ".dockerignore"):
         patterns = (ROOT / filename).read_text(encoding="utf-8").splitlines()
         assert "chatgpt_credentials*.json" in patterns
+        assert "telegram_mcp.db*" in patterns
+        assert "*.sock" in patterns
 
 
 def test_internal_markdown_links_resolve():

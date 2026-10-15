@@ -35,6 +35,12 @@ ADMIN_USER_ID = _parse_int_env("ADMIN_USER_ID", 0)
 # Рекомендуется установить права доступа: chmod 600 telethon_session.session
 SESSION_NAME = os.getenv("SESSION_NAME", "telethon_session")
 
+# Optional owner-only Unix bridge. No TCP listener or second Telethon session.
+TELEGRAM_MCP_SOCKET = (os.getenv("TELEGRAM_MCP_SOCKET") or "").strip()
+TELEGRAM_MCP_STATE_FILE = (
+    os.getenv("TELEGRAM_MCP_STATE_FILE") or "telegram_mcp.db"
+).strip()
+
 # Настройки по умолчанию
 # Количество сообщений для загрузки, если период не указан
 DEFAULT_MESSAGES_LIMIT = 300

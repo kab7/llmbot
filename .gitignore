@@ -20,6 +20,8 @@ schedules.db
 schedules.db-journal
 schedules.db-shm
 schedules.db-wal
+telegram_mcp.db*
+*.sock
 .DS_Store
 .coverage
 htmlcov/

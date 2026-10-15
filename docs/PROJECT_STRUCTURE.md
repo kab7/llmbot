@@ -12,6 +12,8 @@ llmbot/
 ├── chatgpt_runtime.py
 ├── config.py
 ├── schedule_runtime.py
+├── telegram_access.py
+├── telegram_mcp.py
 ├── pyproject.toml
 ├── requirements.txt
 ├── requirements-dev.txt
@@ -24,6 +26,7 @@ llmbot/
 │   ├── chatgpt_auth.py
 │   ├── telegram_auth.py
 │   ├── deploy_check.py
+│   ├── telegram_mcp.py
 │   └── scrub_logs.py
 ├── docs/
 │   ├── AI_DEVELOPMENT.md
@@ -31,12 +34,14 @@ llmbot/
 │   ├── QUICKSTART.md
 │   ├── INSTALL.md
 │   ├── DEPLOYMENT.md
+│   ├── TELEGRAM_MCP.md
 │   ├── EXAMPLES.md
 │   ├── FAQ.md
 │   ├── PROJECT_STRUCTURE.md
 │   ├── CHANGELOG.md
 │   └── schemas/
 │       ├── parser-command.schema.json
+│       ├── telegram-mcp-tools.json
 │       └── schedule-record.schema.json
 └── tests/
     ├── test_bot_llm_api.py
@@ -48,6 +53,7 @@ llmbot/
     ├── test_config.py
     ├── test_schedule_runtime.py
     ├── test_scrub_logs.py
+    ├── test_telegram_mcp.py
     └── test_repository_contracts.py
 ```
 
@@ -59,6 +65,7 @@ chatgpt_credentials*.json
 venv/
 *.session
 schedules.db*
+telegram_mcp.db*
 bot.log*
 llm_traffic.log*
 .coverage
@@ -66,6 +73,15 @@ htmlcov/
 ```
 
 ## Runtime modules
+
+### `telegram_access.py`, `telegram_mcp.py`
+
+The optional personal-account MCP interface shares the running bot's Telethon
+client via an owner-only Unix RPC socket. The MCP stdio facade is launched through
+SSH/Docker and never opens a session or imports the bot. Six tools cover contact
+and dialog search, exact peer resolution, paginated read-only history, plain-text
+send and persistent send-status lookup. `SendJournal` reserves a UUID before a
+send and never replays uncertain attempts. See [TELEGRAM_MCP.md](TELEGRAM_MCP.md).
 
 ### `bot.py`
 

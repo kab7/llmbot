@@ -14,7 +14,8 @@ before installing OS-specific Docker packages.
 - Default for this recovery: `CHATGPT_MODEL=gpt-6.1-sol`, subject to a successful
   account-specific model catalog check.
 - No incoming application port is required: the bot uses Telegram polling and
-  outbound Telegram/OpenAI connections. SSH is needed for administration.
+  outbound Telegram/OpenAI connections. SSH also transports the optional
+  [Telegram MCP](TELEGRAM_MCP.md); its Unix socket exists only inside the container.
 
 The former server `146.103.100.159` was reported unavailable on 2026-10-13.
 Do not treat it as a working deployment destination. The replacement deployment
@@ -197,3 +198,8 @@ for a consistent session/database file copy, or use SQLite's online backup API
 for the database while preserving session consistency. The traffic logs are not
 needed for recovery. Do not put these backups in Git or public storage.
 An on-host backup alone does not survive loss of the server/disk.
+
+When MCP is enabled, include `telegram_mcp.db` (and any SQLite sidecars) in
+consistent backups. It contains sensitive send receipts and prevents replay;
+never replace a current journal with a stale laptop copy. MCP reuses the bot's
+session and requires neither fresh Telegram login nor another OAuth file.

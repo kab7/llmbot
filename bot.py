@@ -45,6 +45,7 @@ from schedule_runtime import (
     recurrence_to_text,
     save_schedules,
 )
+from telegram_access import SendJournal, TelegramAccess, TelegramBridge
 
 LOG_REDACTION_MARKER = "[REDACTED]"
 _SENSITIVE_LOG_VALUES: set[str] = set()
@@ -4033,6 +4034,21 @@ async def process_user_message(update: Update, context: ContextTypes.DEFAULT_TYP
                 logger.error("Не удалось отправить сообщение об ошибке пользователю")
 
 
+async def start_telegram_bridge():
+    """MCP is optional: a bridge failure must not stop polling or scheduled jobs."""
+    if not config.TELEGRAM_MCP_SOCKET:
+        return None
+    try:
+        service = TelegramAccess(lambda: telethon_client, SendJournal(config.TELEGRAM_MCP_STATE_FILE))
+        bridge = TelegramBridge(service, config.TELEGRAM_MCP_SOCKET)
+        await bridge.start()
+        logger.info("Telegram MCP bridge ready (owner-only Unix socket)")
+        return bridge
+    except Exception as error:
+        logger.error("Telegram MCP bridge unavailable: %s; bot continues", type(error).__name__)
+        return None
+
+
 async def main():
     """Основная функция запуска бота"""
     required_issues, optional_issues = config.get_config_issues()
@@ -4082,6 +4098,7 @@ async def main():
     await application.start()
     await application.updater.start_polling()
     await init_scheduler(application)
+    telegram_bridge = await start_telegram_bridge()
 
     logger.info("✅ Бот запущен и готов к работе! Нажмите Ctrl+C для остановки")
 
@@ -4093,6 +4110,8 @@ async def main():
     finally:
         # Корректное завершение
         logger.info("Остановка бота...")
+        if telegram_bridge is not None:
+            await telegram_bridge.close()
         await application.updater.stop()
         await application.stop()
         await application.shutdown()

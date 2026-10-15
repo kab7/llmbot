@@ -15,6 +15,13 @@ Python code and tests.
 
 ### Added
 
+- SSH-protected six-tool Telegram MCP using the bot's single Telethon client:
+  contact/dialog search, exact peer resolution, paginated read-only history,
+  plain-text sending and durable UUID send receipts. No public listener or
+  separate Telegram session; bot polling and schedules remain independent.
+- MCP transport, permissions, validation, retry/uncertainty, protocol and stdio
+  tests, plus a generated tools contract and deployment/connection runbook.
+
 - Fresh-host/disaster-recovery runbook, isolated hidden-input Telegram session
   setup, and non-polling deployment checks included in the Docker image.
 

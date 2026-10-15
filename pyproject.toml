@@ -9,6 +9,8 @@ source = [
   "chatgpt_runtime",
   "config",
   "schedule_runtime",
+  "telegram_access",
+  "telegram_mcp",
 ]
 
 [tool.coverage.report]
