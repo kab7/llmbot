@@ -10,6 +10,7 @@ source = [
   "config",
   "schedule_runtime",
   "telegram_access",
+  "telegram_folders",
   "telegram_mcp",
   "telegram_rpc",
   "telegram_ssh",

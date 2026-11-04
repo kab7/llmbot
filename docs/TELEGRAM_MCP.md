@@ -2,7 +2,8 @@
 
 This optional interface uses the bot's existing authenticated **personal Telegram
 account**, not its Bot API identity. It searches personal contacts/joined dialogs,
-reads history, and sends plain text. It does not run an LLM or require another
+lists folders and accessible group participants, reads history, and sends plain
+text. It does not run an LLM or require another
 subscription/API key. The ordinary bot and all persisted schedules remain active.
 
 ## Architecture and trust boundary
@@ -41,7 +42,7 @@ on the next call, including after a bot restart. No writes are automatically ret
 Compose enables `/tmp/llmbot-mcp/control.sock` inside the existing bot container.
 The dedicated parent directory must be owned by the process user with mode 0700;
 the socket has mode 0600. No TCP listener is created. The RPC layer accepts only
-the six named operations, bounds request/response sizes, and times out operations.
+the nine named operations, bounds request/response sizes, and times out operations.
 Outside Docker, `TELEGRAM_MCP_SOCKET=` disables the interface. Set a dedicated
 socket path to enable it, and persist `TELEGRAM_MCP_STATE_FILE` securely.
 
@@ -110,6 +111,9 @@ it exactly against the SDK-generated tools, including inputs and read/write hint
 | --- | --- |
 | `search_contacts(query, limit=20)` | Case-insensitive substring search of personal contacts' names/usernames, not Telegram's global directory. Empty query lists contacts. Returns up to 100; `has_more` signals truncation. No phone numbers/access hashes. |
 | `search_chats(query="", limit=20, offset=0)` | Search account dialogs (users, groups, channels). `next_offset` paginates matching dialogs; null means exhausted. Includes unread counts. |
+| `list_folders(query="")` | List custom folder IDs/titles, including shared folders. Optional case-insensitive title substring; empty returns all. The default All tab is omitted. |
+| `list_folder_chats(folder_id, limit=100, offset=0)` | Exact folder ID from `list_folders`; current membership, unread counts and `next_offset`. Includes explicit/pinned peers plus category rules and archive/read/mute conditions. Up to 100 per page. |
+| `list_chat_members(peer, limit=100, offset=0)` | Current group/channel participants visible to the owner, without phone numbers or access hashes; follow `next_offset`. Telegram may restrict/hide the roster or deny access. Does not join groups or change membership. |
 | `resolve_chat(peer)` | Exact numeric marked ID from search, `@username`, or `me` for Saved Messages. Returns identity/type. Display names, phone numbers, fuzzy guesses and arbitrary URLs are rejected. |
 | `read_history(peer, limit=30, offset_id=0, query="", after=null, before=null)` | Up to 100 messages, newest page returned chronologically. `next_offset_id` pages toward older messages. Optional in-chat text search and exclusive ISO 8601 date bounds with timezone. Returns text, timestamp, sender ID, outgoing flag, media type, reply ID and original-post link where possible. No downloads or read acknowledgements. |
 | `send_message(peer, text, request_id, reply_to=null)` | Send literal plain text with optional reply ID; no Markdown parsing, link previews, splitting, attachments or implicit multi-recipient broadcast. Maximum 4096 UTF-16 units. Requires a UUID idempotency key. |
@@ -120,6 +124,15 @@ Ordinary private user conversations and legacy groups have no usable message
 permalink; return null instead of inventing one. Only accessible peers/history can
 be used; Telegram privacy, write permissions and rate limits still apply. Contact
 search returns candidates, not a guarantee of unique identity.
+
+Folder membership uses Telegram precedence: explicit exclusion wins, explicit
+include/pinned peers override dynamic exclusions. Bot/contact/non-contact types
+are disjoint. Read filters include unread marks and mentions; muted chats with
+unread mentions remain visible outside the archive. Global mute defaults are
+loaded lazily at most once per needed peer category in a traversal. Folder and
+participant pagination uses live Telegram order, so concurrent changes can move
+items between pages. A null participant cursor exhausts the accessible result,
+not a guarantee that Telegram exposed every member.
 
 Dates must include a timezone, e.g. `2026-10-15T00:00:00+03:00`. To read a whole
 day, pass its bounds and follow every `next_offset_id`. A page is not an entire

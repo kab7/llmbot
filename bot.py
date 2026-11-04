@@ -46,6 +46,10 @@ from schedule_runtime import (
     save_schedules,
 )
 from telegram_access import SendJournal, TelegramAccess, TelegramBridge
+from telegram_folders import (
+    get_dialog_filter_title, _compile_dialog_filter, _dialog_in_filter,
+    _is_dialog_muted, load_filter_notify_default,
+)
 
 LOG_REDACTION_MARKER = "[REDACTED]"
 _SENSITIVE_LOG_VALUES: set[str] = set()
@@ -1890,19 +1894,6 @@ def calculate_similarity(str1: str, str2: str) -> float:
     return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
 
 
-def get_dialog_filter_title(dialog_filter: Any) -> str:
-    """Возвращает строковый заголовок папки для разных версий Telethon."""
-    raw_title = getattr(dialog_filter, "title", "")
-    if isinstance(raw_title, str):
-        return raw_title
-
-    text = getattr(raw_title, "text", None)
-    if isinstance(text, str):
-        return text
-
-    return str(raw_title or "")
-
-
 def _is_connection_error(error_msg: str) -> bool:
     """Проверяет, является ли ошибка ошибкой соединения"""
     error_lower = error_msg.lower()
@@ -2055,158 +2046,6 @@ def utc_to_local(utc_dt: datetime) -> datetime:
 def remove_emojis(text: str) -> str:
     """Удаляет эмодзи из текста для более точного поиска"""
     return EMOJI_PATTERN.sub("", text).strip()
-
-
-def _peer_key_from_peer(peer) -> Optional[tuple[str, int]]:
-    """Преобразует peer из DialogFilter в унифицированный ключ."""
-    if hasattr(peer, "user_id"):
-        return ("user", peer.user_id)
-    if hasattr(peer, "chat_id"):
-        return ("chat", peer.chat_id)
-    if hasattr(peer, "channel_id"):
-        return ("channel", peer.channel_id)
-    return None
-
-
-def _peer_key_from_entity(entity) -> Optional[tuple[str, int]]:
-    """Преобразует Telegram entity в унифицированный ключ."""
-    if isinstance(entity, User):
-        return ("user", entity.id)
-    if isinstance(entity, Chat):
-        return ("chat", entity.id)
-    if isinstance(entity, Channel):
-        return ("channel", entity.id)
-    return None
-
-
-def _is_group_entity(entity) -> bool:
-    """Проверяет, является ли entity группой/супергруппой."""
-    if isinstance(entity, Chat):
-        return True
-    if isinstance(entity, Channel):
-        return bool(getattr(entity, "megagroup", False))
-    return False
-
-
-def _is_broadcast_entity(entity) -> bool:
-    """Проверяет, является ли entity каналом-вещателем."""
-    return isinstance(entity, Channel) and not bool(getattr(entity, "megagroup", False))
-
-
-def _is_dialog_muted(dialog) -> bool:
-    """Проверяет, замьючен ли диалог."""
-    settings = getattr(dialog, "notify_settings", None)
-    if settings is None and hasattr(dialog, "dialog") and dialog.dialog is not None:
-        settings = getattr(dialog.dialog, "notify_settings", None)
-    if settings is None:
-        return False
-
-    mute_until = getattr(settings, "mute_until", None)
-    if mute_until is None:
-        return False
-
-    now = datetime.now(timezone.utc)
-    if isinstance(mute_until, int):
-        return mute_until > int(now.timestamp())
-    if isinstance(mute_until, datetime):
-        if mute_until.tzinfo is None:
-            mute_until = mute_until.replace(tzinfo=timezone.utc)
-        return mute_until > now
-    return False
-
-
-def _compile_dialog_filter(dialog_filter: Any) -> Dict[str, Any]:
-    """Подготавливает структуру фильтра папки для быстрого применения к диалогам."""
-    include_keys = {
-        key
-        for key in (
-            _peer_key_from_peer(peer)
-            for peer in getattr(dialog_filter, "include_peers", [])
-        )
-        if key is not None
-    }
-    exclude_keys = {
-        key
-        for key in (
-            _peer_key_from_peer(peer)
-            for peer in getattr(dialog_filter, "exclude_peers", [])
-        )
-        if key is not None
-    }
-    pinned_keys = {
-        key
-        for key in (
-            _peer_key_from_peer(peer)
-            for peer in getattr(dialog_filter, "pinned_peers", [])
-        )
-        if key is not None
-    }
-    return {
-        "include_keys": include_keys,
-        "exclude_keys": exclude_keys,
-        "pinned_keys": pinned_keys,
-    }
-
-
-def _dialog_in_filter(
-    dialog, dialog_filter: Any, compiled_filter: Optional[Dict[str, Any]] = None
-) -> bool:
-    """Определяет, входит ли диалог в папку с учетом include/exclude и динамических правил."""
-    entity = dialog.entity
-    peer_key = _peer_key_from_entity(entity)
-    if peer_key is None:
-        return False
-
-    compiled = compiled_filter or _compile_dialog_filter(dialog_filter)
-    include_keys = compiled["include_keys"]
-    exclude_keys = compiled["exclude_keys"]
-    pinned_keys = compiled["pinned_keys"]
-
-    explicit_include = peer_key in include_keys or peer_key in pinned_keys
-    dynamic_include = False
-
-    if isinstance(entity, User):
-        is_bot = bool(getattr(entity, "bot", False))
-        is_contact = bool(getattr(entity, "contact", False))
-        if getattr(dialog_filter, "bots", False) and is_bot:
-            dynamic_include = True
-        if getattr(dialog_filter, "contacts", False) and is_contact:
-            dynamic_include = True
-        if (
-            getattr(dialog_filter, "non_contacts", False)
-            and not is_contact
-            and not is_bot
-        ):
-            dynamic_include = True
-
-    if getattr(dialog_filter, "groups", False) and _is_group_entity(entity):
-        dynamic_include = True
-
-    if getattr(dialog_filter, "broadcasts", False) and _is_broadcast_entity(entity):
-        dynamic_include = True
-
-    if not explicit_include and not dynamic_include:
-        return False
-
-    if peer_key in exclude_keys:
-        return False
-
-    if (
-        getattr(dialog_filter, "exclude_read", False)
-        and getattr(dialog, "unread_count", 0) == 0
-    ):
-        return False
-
-    if getattr(dialog_filter, "exclude_muted", False) and _is_dialog_muted(dialog):
-        return False
-
-    if (
-        getattr(dialog_filter, "exclude_archived", False)
-        and getattr(dialog, "folder_id", None) == 1
-    ):
-        return False
-
-    return True
 
 
 async def find_chat_by_name(chat_name: str, fuzzy: bool = True):
@@ -2403,6 +2242,13 @@ async def get_chats_in_folder(dialog_filter: Any) -> list:
                     "📂 Первый диалог из iter_dialogs(): title='%s', entity_id=%s",
                     title,
                     getattr(entity, "id", "unknown"),
+                )
+
+            # Load inherited notification defaults only when dynamic rules need them.
+            if getattr(dialog_filter, "exclude_muted", False):
+                await asyncio.wait_for(
+                    load_filter_notify_default(telethon_client, dialog, dialog_filter, compiled_filter),
+                    timeout=GET_FOLDERS_TIMEOUT_SECONDS,
                 )
 
             # Проверяем, входит ли этот чат в папку (explicit + dynamic rules)

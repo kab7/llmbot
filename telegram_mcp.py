@@ -51,6 +51,29 @@ def create_server(socket_path=None, *, transport=None):
         return await call("search_chats", query=query, limit=limit, offset=offset)
 
     @server.tool(annotations=read)
+    async def list_folders(query: str = "") -> dict[str, Any]:
+        """List custom Telegram folders by id/title. Optional case-insensitive title substring; empty lists all."""
+        return await call("list_folders", query=query)
+
+    @server.tool(annotations=read)
+    async def list_folder_chats(folder_id: int, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        """List current folder dialogs using an exact id from list_folders and Telegram membership rules.
+
+        Returns folder metadata and chats with unread counts. Follow next_offset until null.
+        Pages use live dialog order; membership/order may change between calls. Never marks read.
+        """
+        return await call("list_folder_chats", folder_id=folder_id, limit=limit, offset=offset)
+
+    @server.tool(annotations=read)
+    async def list_chat_members(peer: str, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        """List group/channel participants visible to the owner; no phone numbers or access hashes.
+
+        Exact peer id/@username required. Follow next_offset until null; Telegram may restrict the roster.
+        Membership/order is current and may change between pages. Never joins or changes membership.
+        """
+        return await call("list_chat_members", peer=peer, limit=limit, offset=offset)
+
+    @server.tool(annotations=read)
     async def resolve_chat(peer: str) -> dict[str, Any]:
         """Resolve an exact numeric peer id, @username, or 'me' (Saved Messages). No fuzzy sending."""
         return await call("resolve_chat", peer=peer)

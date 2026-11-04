@@ -10,7 +10,7 @@ MAX_REQUEST_BYTES = 65536
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 RPC_TIMEOUT = 60
 OPERATIONS = (
-    "search_contacts", "search_chats", "resolve_chat", "read_history",
+    "search_contacts", "search_chats", "list_folders", "list_folder_chats", "list_chat_members", "resolve_chat", "read_history",
     "send_message", "get_send_status",
 )
 
