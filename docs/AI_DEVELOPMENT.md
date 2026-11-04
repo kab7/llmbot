@@ -42,7 +42,8 @@ context.
 | `config.py` | Import-time `.env` loading, typed environment parsing, defaults, validation, parser prompt, and processor prompt. |
 | `schedule_runtime.py` | SQLite schema and serialization plus recurrence calculations. It has no Telegram or APScheduler dependency. |
 | `telegram_access.py` | Personal Telegram operations, persistent idempotency receipts and bounded owner-only Unix RPC; uses the existing client, never opens a session. |
-| `telegram_mcp.py`, `scripts/telegram_mcp.py` | LOCAL six-tool MCP stdio facade/entrypoint; no SSH at discovery/idle, no bot/config/Telethon imports. Never ship it in the bot image. |
+| `telegram_folders.py` | Shared folder membership rules, title normalization and lazy inherited mute lookups using the existing client. |
+| `telegram_mcp.py`, `scripts/telegram_mcp.py` | LOCAL nine-tool MCP stdio facade/entrypoint; no SSH at discovery/idle, no bot/config/Telethon imports. Never ship it in the bot image. |
 | `telegram_ssh.py` | Bounded per-call SSH transport from local MCP, stdin-only payloads, no replay, reconnects on the next call. |
 | `telegram_rpc.py`, `scripts/telegram_rpc.py` | Standard-library-only bounded wire client and one-shot server helper. No SDK, session or config. |
 | `tests/test_telegram_mcp.py` | Search/history/send semantics, uncertainty/deduplication, socket permissions, real MCP protocol, stdio and generated contract. |
@@ -179,8 +180,12 @@ Chat and folder lookup share `find_best_match()`:
 
 Folder membership is reproduced from Telegram `DialogFilter` fields. It combines
 explicit/pinned peers with dynamic `bots`, `contacts`, `non_contacts`, `groups`,
-and `broadcasts` rules, then applies explicit exclusion and the
-`exclude_read`, `exclude_muted`, and `exclude_archived` flags.
+and `broadcasts` rules. Explicit exclusion wins; explicit include/pinned peers
+override dynamic `exclude_read`, `exclude_muted`, and `exclude_archived` flags.
+Bot/contact/non-contact categories are disjoint. Unread marks and mentions count
+as unread; mentions bypass mute exclusion only outside the archive. Inherited
+mute settings are read lazily once per needed users/chats/broadcasts category.
+The shared `telegram_folders.py` implementation is also used by MCP.
 
 Folder history loading is sequential. There are two processing modes:
 
@@ -449,7 +454,7 @@ python -m pytest
 ```
 
 `pyproject.toml` enables terminal missing-line coverage and enforces 50% across
-`bot`, `chatgpt_runtime`, `config`, `schedule_runtime`, `telegram_access`, and
+`bot`, `chatgpt_runtime`, `config`, `schedule_runtime`, `telegram_access`, `telegram_folders`, and
 the client modules `telegram_mcp`, `telegram_rpc`, and `telegram_ssh`.
 
 Do not hand-edit a verification snapshot here. Report the complete suite result

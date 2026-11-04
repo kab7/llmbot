@@ -71,6 +71,108 @@
       }
     },
     {
+      "name": "list_folders",
+      "description": "List custom Telegram folders by id/title. Optional case-insensitive title substring; empty lists all.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "title": "list_foldersArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_foldersDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_folder_chats",
+      "description": "List current folder dialogs using an exact id from list_folders and Telegram membership rules.\n\n        Returns folder metadata and chats with unread counts. Follow next_offset until null.\n        Pages use live dialog order; membership/order may change between calls. Never marks read.\n        ",
+      "inputSchema": {
+        "properties": {
+          "folder_id": {
+            "title": "Folder Id",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "folder_id"
+        ],
+        "title": "list_folder_chatsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_folder_chatsDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_chat_members",
+      "description": "List group/channel participants visible to the owner; no phone numbers or access hashes.\n\n        Exact peer id/@username required. Follow next_offset until null; Telegram may restrict the roster.\n        Membership/order is current and may change between pages. Never joins or changes membership.\n        ",
+      "inputSchema": {
+        "properties": {
+          "peer": {
+            "title": "Peer",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "peer"
+        ],
+        "title": "list_chat_membersArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_chat_membersDictOutput",
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
       "name": "resolve_chat",
       "description": "Resolve an exact numeric peer id, @username, or 'me' (Saved Messages). No fuzzy sending.",
       "inputSchema": {

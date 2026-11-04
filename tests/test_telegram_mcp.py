@@ -287,7 +287,7 @@ def test_stdio_entrypoint_and_unavailable_bridge():
             async with ClientSession(read, write) as session:
                 initialized = await session.initialize()
                 assert "PERSONAL" in initialized.instructions
-                assert len((await session.list_tools()).tools) == 6
+                assert len((await session.list_tools()).tools) == 9
                 result = await session.call_tool("resolve_chat", {"peer": "me"})
                 assert result.isError and "unavailable" in result.content[0].text
     run(scenario())

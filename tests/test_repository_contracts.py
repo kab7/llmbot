@@ -162,6 +162,7 @@ def test_dockerfile_copies_every_runtime_module():
         "config.py",
         "schedule_runtime.py",
         "telegram_access.py",
+        "telegram_folders.py",
         "telegram_rpc.py",
     ):
         assert module in dockerfile

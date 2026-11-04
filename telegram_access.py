@@ -19,7 +19,12 @@ from uuid import UUID
 
 from telethon import errors, utils
 from telethon.tl.functions.contacts import GetContactsRequest
+from telethon.tl.functions.messages import GetDialogFiltersRequest
 from telethon.tl.types import Channel, Chat, User
+from telegram_folders import (
+    dialog_filters, get_dialog_filter_title, _compile_dialog_filter,
+    _dialog_in_filter, load_filter_notify_default,
+)
 from telegram_rpc import (
     AccessError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, OPERATIONS, RPC_TIMEOUT,
     bridge_call,
@@ -184,6 +189,75 @@ class TelegramAccess:
 
     async def resolve_chat(self, peer):
         return entity_info(await self.entity(peer))
+
+    async def list_folders(self, query=""):
+        query = _text(query, "query", allow_empty=True).casefold().strip()
+        filters = dialog_filters(await self.client()(GetDialogFiltersRequest()))
+        return {"folders": [{"id": item.id, "title": get_dialog_filter_title(item)}
+                            for item in filters
+                            if query in get_dialog_filter_title(item).casefold()]}
+
+    async def list_chat_members(self, peer, limit=100, offset=0):
+        _integer(limit, "limit", 1, 100)
+        _integer(offset, "offset", 0, 10000)
+        entity = await self.entity(peer)
+        if not isinstance(entity, (Chat, Channel)):
+            raise AccessError("invalid_peer", "Members require a group or channel")
+        members = []
+        seen = set()
+        skipped = 0
+        async for user in self.client().iter_participants(entity):
+            if not isinstance(user, User):
+                continue
+            item = entity_info(user)
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            if skipped < offset:
+                skipped += 1
+                continue
+            members.append(item)
+            if len(members) > limit:
+                break
+        return {"chat": entity_info(entity), "members": members[:limit],
+                "next_offset": offset + limit if len(members) > limit else None,
+                "scope": "Participants visible to this account; Telegram may restrict the roster"}
+
+    async def list_folder_chats(self, folder_id, limit=100, offset=0):
+        _integer(folder_id, "folder_id", 1, 2**31 - 1)
+        _integer(limit, "limit", 1, 100)
+        _integer(offset, "offset", 0, 10000)
+        client = self.client()
+        filters = dialog_filters(await client(GetDialogFiltersRequest()))
+        selected = next((item for item in filters if item.id == folder_id), None)
+        if selected is None:
+            raise AccessError("not_found", "Folder not found; use list_folders first")
+        compiled = _compile_dialog_filter(selected)
+        matches = []
+        skipped = 0
+        seen = set()
+        # iter_dialogs without folder= includes both the main list and archive.
+        # Telegram's folder= parameter denotes archive, not custom filter IDs.
+        async for dialog in client.iter_dialogs():
+            if not isinstance(dialog.entity, (User, Chat, Channel)):
+                continue
+            await load_filter_notify_default(client, dialog, selected, compiled)
+            if not _dialog_in_filter(dialog, selected, compiled):
+                continue
+            item = entity_info(dialog.entity)
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            if skipped < offset:
+                skipped += 1
+                continue
+            item["unread_count"] = dialog.unread_count
+            matches.append(item)
+            if len(matches) > limit:
+                break
+        return {"folder": {"id": selected.id, "title": get_dialog_filter_title(selected)},
+                "chats": matches[:limit],
+                "next_offset": offset + limit if len(matches) > limit else None}
 
     async def read_history(self, peer, limit=30, offset_id=0, query="", after=None, before=None):
         _integer(limit, "limit", 1, 100)

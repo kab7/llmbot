@@ -149,6 +149,9 @@ Folder, one shared context:
 Сделай топ-10 новостей по всем непрочитанным каналам в папке news и отметь их прочитанными
 ```
 
+The optional [Telegram MCP](docs/TELEGRAM_MCP.md) also lists current Telegram
+folders, their chats and accessible group participants without marking messages read.
+
 Schedule:
 
 ```text

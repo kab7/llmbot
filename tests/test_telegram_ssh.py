@@ -211,7 +211,7 @@ def test_same_mcp_session_recovers_from_ssh_failure_and_bot_restart(monkeypatch)
         server = create_server(transport=SSHBridge("host"))
         try:
             async with create_connected_server_and_client_session(server._mcp_server) as session:
-                assert len((await session.list_tools()).tools) == 6
+                assert len((await session.list_tools()).tools) == 9
                 assert not calls  # Discovery never contacts server/SSH.
                 first = await session.call_tool("resolve_chat", {"peer": "me"})
                 assert first.isError

@@ -817,9 +817,10 @@ def test_dialog_filter_helpers(monkeypatch):
             self.id = channel_id
             self.megagroup = megagroup
 
-    monkeypatch.setattr(bot, "User", FakeUser)
-    monkeypatch.setattr(bot, "Chat", FakeChat)
-    monkeypatch.setattr(bot, "Channel", FakeChannel)
+    import telegram_folders
+    monkeypatch.setattr(telegram_folders, "User", FakeUser)
+    monkeypatch.setattr(telegram_folders, "Chat", FakeChat)
+    monkeypatch.setattr(telegram_folders, "Channel", FakeChannel)
 
     group_dialog = SimpleNamespace(
         entity=FakeChat(10),
@@ -866,12 +867,12 @@ def test_dialog_filter_helpers(monkeypatch):
     group_dialog.notify_settings = SimpleNamespace(
         mute_until=int(datetime.now(timezone.utc).timestamp()) + 3600
     )
-    assert bot._dialog_in_filter(group_dialog, include_only_filter) is False
+    assert bot._dialog_in_filter(group_dialog, include_only_filter) is True
     include_only_filter.exclude_muted = False
     include_only_filter.exclude_archived = True
     group_dialog.notify_settings = None
     group_dialog.folder_id = 1
-    assert bot._dialog_in_filter(group_dialog, include_only_filter) is False
+    assert bot._dialog_in_filter(group_dialog, include_only_filter) is True
 
     user_dialog = SimpleNamespace(
         entity=FakeUser(42, bot_user=True, contact=False),
