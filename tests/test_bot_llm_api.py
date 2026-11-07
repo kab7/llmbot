@@ -558,6 +558,52 @@ def test_process_chat_with_openai_requires_real_source_url(monkeypatch):
     assert len(captured["messages"]) == 4
 
 
+def test_combined_summary_repairs_unsupported_date_without_losing_citations(monkeypatch):
+    url = "https://t.me/invest_sample/11"
+    history = (
+        f"[2026-11-06 12:30:00] Invest: размещение 09.11.26, "
+        f"расчёты 12 ноября. [Оригинал]({url})"
+    )
+    bad = f"Размещение 9 ноября 2026, расчёты 12 ноября 2026. [оригинал]({url})"
+    good = f"Размещение 9 ноября 2026, расчёты 12 ноября. [оригинал]({url})"
+    client = _set_chatgpt_client(monkeypatch, [
+        ChatGPTResponse(bad, "gpt-test"),
+        ChatGPTResponse(bad, "gpt-test"),
+        ChatGPTResponse(good, "gpt-test"),
+    ])
+    monkeypatch.setattr(bot.time, "sleep", lambda _: None)
+
+    result = asyncio.run(bot._process_chat_with_openai_result(
+        history, "Общая сводка по папке Invest", "вчера",
+        requested_model="gpt-test", required_source_urls={url},
+    ))
+
+    assert result["ok"] and good in result["answer"]
+    assert result["stats"]["gpt-test"]["rejected"] == 2
+    first, retry, last = (call["messages"] for call in client.calls)
+    assert len(first) == 2
+    assert len(retry) == 4 and retry == last
+    assert retry[:2] == first
+    assert retry[-2] == {"role": "assistant", "content": bad}
+    assert bot.UNSUPPORTED_SUMMARY_DATES in retry[-1]["content"]
+    assert "не добавляй год" in retry[-1]["content"]
+    assert "[Оригинал](URL)" in retry[-1]["content"]
+
+
+def test_unsupported_date_still_fails_if_model_ignores_repair(monkeypatch):
+    bad = "Погашение — 25 ноября 2026."
+    client = _set_chatgpt_client(monkeypatch, [ChatGPTResponse(bad, "gpt-test")] * 3)
+    monkeypatch.setattr(bot.time, "sleep", lambda _: None)
+    result = asyncio.run(bot._process_chat_with_openai_result(
+        "[2026-11-06 12:30:00] Invest: дата погашения ещё не объявлена.",
+        "Сводка", "вчера", requested_model="gpt-test",
+    ))
+    assert not result["ok"]
+    assert bot.UNSUPPORTED_SUMMARY_DATES in result["answer"]
+    assert bad not in result["answer"]
+    assert [len(call["messages"]) for call in client.calls] == [2, 4, 4]
+
+
 def test_process_chat_with_openai_repairs_false_single_source_claim(monkeypatch):
     source_url = "https://t.me/source_a/11"
     combined_sources = [

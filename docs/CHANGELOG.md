@@ -5,6 +5,12 @@ Python code and tests.
 
 ## Unreleased
 
+### Fixed
+
+- Summary date validation now compares equivalent numeric and Russian dates,
+  including shared-month range endpoints, without guessing missing years.
+  Date rejections request a grounded rewrite instead of retrying the same prompt.
+
 ### Removed
 
 - All Yandex Cloud and OpenRouter runtime integrations, configuration variables,

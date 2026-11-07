@@ -209,10 +209,11 @@ high-precision validator rejects a leading meta-claim that only one source is
 present or that all other sources are absent when the manifest contains more
 than one. It does not require every source to appear in the result.
 
-On the first repairable citation or source-presence rejection, the mutable
+On the first repairable date, citation, or source-presence rejection, the mutable
 request conversation is extended with the rejected assistant answer and a
-focused correction instruction. Citation repair copies exact URLs from the
-`Оригинал` markers. Source-presence repair includes the authoritative manifest
+focused correction instruction. Date repair removes unsupported precision while
+preserving confirmed events and exact original links. Citation repair copies
+exact URLs from the `Оригинал` markers. Source-presence repair includes the authoritative manifest
 and explicitly allows selecting only relevant sources. Later candidates and
 retry rounds therefore repair the answer instead of receiving an identical
 prompt. Only one validation-repair turn is appended.
@@ -327,7 +328,14 @@ override is used for large combined-folder requests.
 ### Summary quality and logging
 
 The processor prompt requires Russian, grounded output. A response validator
-rejects suspicious artifacts and unsupported dates. Combined-folder calls also
+rejects suspicious artifacts and unsupported dates. Date validation normalizes
+ISO-style year-first dates (including dates in source URLs), dotted day-first
+dates (`DD.MM.YYYY` and `DD.MM.YY` in the 2000s), and Russian day/month dates
+with an optional year. It recognizes the stated endpoints of shared-month
+ranges, not every intervening day. A full source date supports omitting its
+year, but a yearless source date never authorizes inventing a year. A date
+rejection uses the single validation repair turn to request a grounded rewrite;
+subsequent candidates still pass the same validator. Combined-folder calls also
 reject missing/invented source links and false claims that a supplied
 multi-source history contains only one source. The first repairable rejection
 adds a focused correction turn.

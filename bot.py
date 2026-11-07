@@ -285,13 +285,7 @@ SUMMARY_BOILERPLATE_PATTERN = re.compile(
 UNEXPECTED_SCRIPT_PATTERN = re.compile(
     r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0900-\u097f]"
 )
-RU_DATE_PATTERN = re.compile(
-    r"\b([0-3]?\d)\s+"
-    r"(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+"
-    r"(20\d{2})\b",
-    flags=re.IGNORECASE,
-)
-RU_MONTHS_GENITIVE = [
+RU_MONTHS_GENITIVE = (
     "января",
     "февраля",
     "марта",
@@ -304,10 +298,21 @@ RU_MONTHS_GENITIVE = [
     "октября",
     "ноября",
     "декабря",
-]
-NUMERIC_DATE_PATTERN = re.compile(
-    r"(?<!\d)(20\d{2})[-/](\d{2})[-/](\d{2})(?!\d)"
 )
+RU_MONTH_NUMBERS = {name: number for number, name in enumerate(RU_MONTHS_GENITIVE, 1)}
+DATE_RANGE_START = r"(?:(\d{1,2})(?:[^\S\r\n]*[-–—][^\S\r\n]*|[^\S\r\n]+(?i:по)[^\S\r\n]+))?"
+RU_DATE_PATTERN = re.compile(
+    rf"\b{DATE_RANGE_START}(\d{{1,2}})(?:-го)?[^\S\r\n]+"
+    rf"({'|'.join(RU_MONTHS_GENITIVE)})\b(?:,?[^\S\r\n]+(20\d{{2}})\b)?",
+    flags=re.IGNORECASE,
+)
+ISO_DATE_PATTERN = re.compile(r"(?<!\d)(20\d{2})([-/])(\d{2})\2(\d{2})(?!\d)")
+DMY_DATE_PATTERN = re.compile(
+    rf"(?<![\w.]){DATE_RANGE_START}(\d{{1,2}})\.(\d{{1,2}})\."
+    r"(20\d{2}|\d{2})(?:(?!\w|\.\d)|(?=г\.))",
+    flags=re.IGNORECASE,
+)
+UNSUPPORTED_SUMMARY_DATES = "обнаружены даты, отсутствующие в исходной истории"
 HISTORY_MESSAGE_START_PATTERN = re.compile(
     r"(?m)^\[20\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] "
 )
@@ -576,34 +581,55 @@ def _apply_schedule_intent_guard(
     return None, None, None, False
 
 
-def _extract_numeric_dates(text: str) -> set[str]:
-    dates: set[str] = set()
-    for raw_date in NUMERIC_DATE_PATTERN.findall(text or ""):
-        year_str, month_str, day_str = raw_date
-        try:
-            year = int(year_str)
-            month = int(month_str)
-            day = int(day_str)
-            datetime(year, month, day)
-        except ValueError:
-            continue
-        dates.add(f"{year:04d}-{month:02d}-{day:02d}")
+CalendarDate = tuple[int | None, int, int]
+
+
+def _is_valid_calendar_date(value: CalendarDate) -> bool:
+    year, month, day = value
+    try:
+        # A yearless Feb 29 is valid without committing to a specific year.
+        datetime(year if year is not None else 2000, month, day)
+    except ValueError:
+        return False
+    return True
+
+
+def _extract_calendar_dates(text: str) -> set[CalendarDate]:
+    """Normalize date notation without guessing a missing year."""
+    text = text or ""
+    dates: set[CalendarDate] = set()
+    for year, _, month, day in ISO_DATE_PATTERN.findall(text):
+        value = (int(year), int(month), int(day))
+        if _is_valid_calendar_date(value):
+            dates.add(value)
+    for start_day, day, month, year in DMY_DATE_PATTERN.findall(text):
+        if len(year) == 2 and (len(day) != 2 or len(month) != 2):
+            continue  # Avoid interpreting bare version numbers like 26.1.15 as dates.
+        parsed_year = int(year) + (2000 if len(year) == 2 else 0)
+        for endpoint in (start_day, day):
+            if endpoint:
+                value = (parsed_year, int(month), int(endpoint))
+                if _is_valid_calendar_date(value):
+                    dates.add(value)
+    for start_day, day, month, year in RU_DATE_PATTERN.findall(text):
+        parsed_year = int(year) if year else None
+        month_number = RU_MONTH_NUMBERS[month.lower()]
+        dates.add((parsed_year, month_number, int(day)))
+        if start_day:
+            dates.add((parsed_year, month_number, int(start_day)))
     return dates
 
 
-def _extract_allowed_ru_dates_from_history(chat_history: str) -> set[str]:
-    allowed: set[str] = set()
-    for iso_date in _extract_numeric_dates(chat_history):
-        year_str, month_str, day_str = iso_date.split("-")
-        year = int(year_str)
-        month = int(month_str)
-        day = int(day_str)
-        allowed.add(f"{day} {RU_MONTHS_GENITIVE[month - 1]} {year}")
-    allowed.update(
-        f"{int(day)} {month.lower()} {int(year)}"
-        for day, month, year in RU_DATE_PATTERN.findall(chat_history or "")
-    )
-    return allowed
+def _unsupported_calendar_dates(text: str, history: str) -> set[CalendarDate]:
+    mentioned = _extract_calendar_dates(text)
+    if not mentioned:
+        return set()
+    supported = {
+        value for value in _extract_calendar_dates(history) if _is_valid_calendar_date(value)
+    }
+    # Dropping a year from a known date is safe; adding a year is not.
+    supported |= {(None, month, day) for _, month, day in supported}
+    return mentioned - supported
 
 
 def _claims_combined_sources_missing(summary_text: str) -> bool:
@@ -675,22 +701,10 @@ def _analyze_summary_quality(
         issues.append("обнаружены служебные шаблоны вместо чистого саммари")
         score += len(boilerplate_hits)
 
-    summary_iso_dates = _extract_numeric_dates(text)
-    history_iso_dates = _extract_numeric_dates(chat_history)
-    extra_iso_dates = summary_iso_dates - history_iso_dates
-    if extra_iso_dates:
-        issues.append("обнаружены даты, отсутствующие в исходной истории")
-        score += len(extra_iso_dates)
-
-    allowed_ru_dates = _extract_allowed_ru_dates_from_history(chat_history)
-    summary_ru_dates = {
-        f"{int(day)} {month.lower()} {int(year)}"
-        for day, month, year in RU_DATE_PATTERN.findall(text)
-    }
-    extra_ru_dates = summary_ru_dates - allowed_ru_dates
-    if extra_ru_dates:
-        issues.append("обнаружены русские даты, отсутствующие в исходной истории")
-        score += len(extra_ru_dates)
+    extra_dates = _unsupported_calendar_dates(text, chat_history)
+    if extra_dates:
+        issues.append(UNSUPPORTED_SUMMARY_DATES)
+        score += len(extra_dates)
 
     return score, issues
 
@@ -2664,7 +2678,24 @@ async def _process_chat_with_openai_result(
         def summary_validator(content: str, candidate) -> Optional[str]:
             score, issues = _analyze_summary_quality(content, chat_history)
             if score > 0:
-                return "; ".join(issues) or "подозрительное качество саммари"
+                reason = "; ".join(issues) or "подозрительное качество саммари"
+                if UNSUPPORTED_SUMMARY_DATES in issues:
+                    citation_instruction = (
+                        " Для каждого пункта скопируй точные ссылки из маркеров "
+                        "[Оригинал](URL) в истории."
+                        if required_source_urls else ""
+                    )
+                    request_validation_repair(
+                        content,
+                        reason,
+                        "Перепиши ответ целиком, сохрани подтверждённые события. "
+                        "Даты бери только из исходной истории. Если в источнике "
+                        "указаны только день и месяц, не добавляй год. Если дату "
+                        "нельзя подтвердить, убери её, но не само событие. "
+                        "Устрани остальные перечисленные причины отклонения."
+                        f"{citation_instruction} Верни только исправленный итог.",
+                    )
+                return reason
 
             if combined_sources and len(combined_sources) > 1:
                 if _claims_combined_sources_missing(content):

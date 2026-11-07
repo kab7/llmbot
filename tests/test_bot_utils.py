@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 import bot
 from schedule_runtime import save_schedules
 
@@ -384,6 +386,46 @@ def test_analyze_summary_quality_accepts_literal_russian_dates_from_history():
 
     assert score == 0
     assert issues == []
+
+
+@pytest.mark.parametrize(
+    ("source", "summary"),
+    [
+        ("Книга заявок закрывается 09.11.2026.", "Закрытие — 9 ноября 2026 года."),
+        ("Погашение 09.11.26.", "Погашение — 2026-11-09."),
+        ("Погашение 9 ноября 2026.", "Погашение — 09.11.2026."),
+        ("Расчёты 9 ноября.", "Расчёты — 09 НОЯБРЯ."),
+        ("Расчёты 09.11.2026.", "Расчёты — 9 ноября."),
+        ("Заявки 9–12 ноября 2026.", "С 09.11.2026 по 12 ноября 2026."),
+        ("Заявки 9–12.11.2026.", "Открытие 9 ноября, закрытие 12 ноября 2026."),
+        ("Заявки с 9 по 12 ноября 2026.", "Окно заявок 9–12.11.2026."),
+        ("Заявки до 9-го ноября.", "Заявки до 9 ноября."),
+        ("Размещение 09.11.2026г.", "Размещение — 9 ноября 2026."),
+        ("Отчёт 29 февраля 2028.", "Отчёт — 29 февраля."),
+        ("Отчёт опубликован.", "Цена 96.52, купон 12.5%, версии 26.1.15 и v7.11.26."),
+    ],
+)
+def test_summary_grounding_normalizes_equivalent_date_formats(source, summary):
+    history = f"[2026-11-06 10:00:00] Invest: {source}"
+    assert bot._analyze_summary_quality(summary, history) == (0, [])
+
+
+@pytest.mark.parametrize(
+    ("source", "summary"),
+    [
+        ("Расчёты 9 ноября.", "Расчёты — 9 ноября 2026."),
+        ("Расчёты 09.11.2026.", "Расчёты — 09.11.27."),
+        ("Расчёты 09.11.2026.", "Расчёты — 10 ноября."),
+        ("Заявки 9–12 ноября.", "Заявки открываются 8–12 ноября."),
+        ("Заявки 9–12 ноября.", "Размещение — 10 ноября."),
+        ("В посте опечатка: 31 ноября 2026.", "Расчёты — 31 ноября 2026."),
+    ],
+)
+def test_summary_grounding_rejects_unconfirmed_dates(source, summary):
+    history = f"[2026-11-06 10:00:00] Invest: {source}"
+    assert bot._analyze_summary_quality(summary, history) == (
+        1, [bot.UNSUPPORTED_SUMMARY_DATES],
+    )
 
 
 def test_combined_source_absence_claim_detection_is_high_precision():

@@ -76,6 +76,9 @@ some legacy chats and private dialogs have no usable permalink.
 Possible causes include: no terminal `response.completed`, failed/incomplete
 SSE, subscription limits, empty output, suspicious artifacts, unsupported dates,
 missing/invented source links, or a false single-source claim in combined mode.
+Equivalent calendar dates such as `09.11.2026` and `9 ноября 2026` are treated
+as the same date. If an answer adds an unsupported date or year, the retry asks
+the model to omit that detail while keeping supported events and citations.
 The first incomplete response is retried with a full compact rewrite request.
 The subscription route does not accept `max_output_tokens`, so the bot omits it.
 
